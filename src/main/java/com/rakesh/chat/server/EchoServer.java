@@ -49,8 +49,7 @@ import java.time.LocalTime;
                                 new BufferedWriter(
                                         new OutputStreamWriter(
                                                 clientSocket.getOutputStream(),
-                                                StandardCharsets.UTF_8)),
-                                true); // autoFlush on println()
+                                                StandardCharsets.UTF_8)),true); // autoFlush on println()
 
                 try {
 
