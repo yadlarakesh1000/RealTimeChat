@@ -45,7 +45,18 @@ public class ChatServer {
                         "[CONNECTED] "
                                 + socket.getRemoteSocketAddress());
 
-                pool.submit(new ClientHandler(socket, this));
+                try {
+                    pool.submit(new ClientHandler(socket, this));
+                } catch (IOException e) {
+                    // Stream setup failed: close the socket so we don't
+                    // leak the file descriptor, then keep accepting.
+                    System.err.println(
+                            "Client setup failed: " + e.getMessage());
+                    try {
+                        socket.close();
+                    } catch (IOException ignored) {
+                    }
+                }
 
             } catch (SocketException e) {
 
