@@ -24,10 +24,11 @@ import java.time.LocalTime;
 
     public void start() throws IOException {
 
-        try (ServerSocket serverSocket = new ServerSocket(port)) {
+        try (ServerSocket serverSocket = new ServerSocket()) {
 
             // Optional for easier restarts during development
             serverSocket.setReuseAddress(true);
+            serverSocket.bind(new java.net.InetSocketAddress(port));
 
             System.out.printf("[%s] Listening on port %d%n",
                     LocalTime.now(), port);

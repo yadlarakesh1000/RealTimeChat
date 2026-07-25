@@ -1,13 +1,14 @@
 package com.rakesh.chat.server;
 
-
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class ChatServer {
 
@@ -16,14 +17,32 @@ public class ChatServer {
 
     private final ServerSocket serverSocket;
     private final ExecutorService pool;
+    private final ClientRegistry registry;
+    private final AtomicInteger activeConnections = new AtomicInteger(0);
 
     private volatile boolean running = false;
 
     public ChatServer() throws IOException {
-        this.serverSocket = new ServerSocket(PORT);
+        this(PORT);
+    }
+
+    public ChatServer(int port) throws IOException {
+        // Set reuseAddress before binding to prevent bind errors during fast restarts
+        this.serverSocket = new ServerSocket();
+        this.serverSocket.setReuseAddress(true);
+        this.serverSocket.bind(new java.net.InetSocketAddress(port));
 
         // Fixed-size worker pool
         this.pool = Executors.newFixedThreadPool(MAX_CLIENT_THREADS);
+        this.registry = new ClientRegistry();
+    }
+
+    public ClientRegistry getRegistry() {
+        return registry;
+    }
+
+    public void decrementActiveConnections() {
+        activeConnections.decrementAndGet();
     }
 
     public void start() {
@@ -45,11 +64,21 @@ public class ChatServer {
                         "[CONNECTED] "
                                 + socket.getRemoteSocketAddress());
 
+                // Capacity rejection check before submitting to thread pool
+                if (activeConnections.get() >= MAX_CLIENT_THREADS) {
+                    System.err.println("Server full. Rejecting: " + socket.getRemoteSocketAddress());
+                    try {
+                        socket.close();
+                    } catch (IOException ignored) {}
+                    continue;
+                }
+
                 try {
-                    pool.submit(new ClientHandler(socket, this));
-                } catch (IOException e) {
-                    // Stream setup failed: close the socket so we don't
-                    // leak the file descriptor, then keep accepting.
+                    activeConnections.incrementAndGet();
+                    // Switch to execute() to prevent silent execution failures
+                    pool.execute(new ClientHandler(socket, this));
+                } catch (IOException | RejectedExecutionException e) {
+                    activeConnections.decrementAndGet();
                     System.err.println(
                             "Client setup failed: " + e.getMessage());
                     try {
@@ -87,6 +116,11 @@ public class ChatServer {
         try {
             serverSocket.close();
         } catch (IOException ignored) {
+        }
+
+        // Close all client sockets (this unblocks client reader threads)
+        for (ClientHandler handler : registry.all()) {
+            handler.cleanup();
         }
 
         pool.shutdown();
