@@ -1,27 +1,22 @@
 package com.rakesh.chat.server;
 
-import com.rakesh.chat.common.BoundedLineReader;
 import com.rakesh.chat.common.ErrorCode;
 import com.rakesh.chat.common.Message;
 import com.rakesh.chat.common.MessageType;
-import com.rakesh.chat.common.ProtocolException;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.io.Closeable;
 import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.io.PrintWriter;
-import java.net.InetSocketAddress;
-import java.net.Socket;
-import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
+import static com.rakesh.chat.server.TestSupport.await;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -30,89 +25,32 @@ import static org.junit.jupiter.api.Assertions.*;
  * <p>The manual {@code nc} walkthrough is still worth doing once — it is how you find
  * out that your error text is unreadable. But every line of it is a regression waiting
  * to happen, so it lives here too. Real sockets, real threads, an ephemeral port.
+ *
+ * <p>Phase 5 moved the {@code RawClient} harness out to its own file so this suite and
+ * {@link Phase5Test} share one hand-written protocol client rather than two that drift.
  */
-@Timeout(15)
+@Timeout(20)
 class ProtocolHandshakeTest {
 
+    @TempDir
+    Path tmp;
+
     private ChatServer server;
-    private Thread acceptor;
     private final List<RawClient> clients = new ArrayList<>();
 
-    /** A hand-driven client that speaks raw protocol, exactly as {@code nc} would. */
-    private final class RawClient implements Closeable {
-        private final Socket socket;
-        private final PrintWriter out;
-        private final BoundedLineReader in;
-
-        RawClient() throws IOException {
-            this.socket = new Socket();
-            this.socket.connect(new InetSocketAddress("127.0.0.1", server.getPort()), 3000);
-            this.socket.setSoTimeout(5000);
-            this.out = new PrintWriter(new OutputStreamWriter(
-                    socket.getOutputStream(), StandardCharsets.UTF_8), true);
-            this.in = new BoundedLineReader(socket.getInputStream(), 1 << 20);
-        }
-
-        /** Writes a raw line with a bare LF, as nc does. */
-        RawClient send(String rawLine) {
-            out.print(rawLine + "\n");
-            out.flush();
-            return this;
-        }
-
-        /** Writes a raw line with CRLF, as Windows telnet does. */
-        RawClient sendCrLf(String rawLine) {
-            out.print(rawLine + "\r\n");
-            out.flush();
-            return this;
-        }
-
-        String readRaw() throws IOException, ProtocolException {
-            return in.readLine();
-        }
-
-        Message read() throws IOException, ProtocolException {
-            String line = readRaw();
-            assertNotNull(line, "expected a message, got end of stream");
-            return Message.parse(line);
-        }
-
-        Message expect(MessageType type) throws IOException, ProtocolException {
-            Message m = read();
-            assertEquals(type, m.type(), "unexpected message: " + m);
-            return m;
-        }
-
-        void expectClosed() throws IOException, ProtocolException {
-            assertNull(readRaw(), "expected the server to close the connection");
-        }
-
-        RawClient helloAs(String nick) throws IOException, ProtocolException {
-            send("HELLO 1 " + nick);
-            assertEquals(MessageType.WELCOME, read().type());
-            return this;
-        }
-
-        @Override
-        public void close() {
-            try {
-                socket.close();
-            } catch (IOException ignored) {
-                // test teardown
-            }
-        }
-    }
-
     private RawClient connect() throws IOException {
-        RawClient c = new RawClient();
+        RawClient c = new RawClient(server.getPort());
         clients.add(c);
         return c;
     }
 
     @BeforeEach
     void startServer() throws IOException {
-        server = new ChatServer(0);
-        acceptor = new Thread(server::start, "test-acceptor");
+        // Phase 5 defaults, with the log redirected so the suite leaves nothing behind.
+        server = new ChatServer(ServerConfig.defaults()
+                .withPort(0)
+                .withConnectionLogPath(tmp.resolve("connections.log")));
+        Thread acceptor = new Thread(server::start, "test-acceptor");
         acceptor.setDaemon(true);
         acceptor.start();
     }
@@ -122,19 +60,6 @@ class ProtocolHandshakeTest {
         clients.forEach(RawClient::close);
         clients.clear();
         server.shutdown();
-    }
-
-    /** Waits for a condition instead of sleeping a magic number of milliseconds. */
-    private static void await(String what, java.util.function.BooleanSupplier condition)
-            throws InterruptedException {
-        long deadline = System.nanoTime() + 5_000_000_000L;
-        while (System.nanoTime() < deadline) {
-            if (condition.getAsBoolean()) {
-                return;
-            }
-            Thread.sleep(5);
-        }
-        fail("timed out waiting for: " + what);
     }
 
     // ------------------------------------------------------------------

@@ -21,6 +21,13 @@ logs/
 # OS
 Thumbs.db
 .DS_Store
+
+# NOTE: PROTOCOL.md, LEARNING-LOG.md and the build guide were listed here and were
+# therefore never committed. They are deliverables, not artifacts — PROTOCOL.md is the
+# frozen wire specification a second implementer would need, and LEARNING-LOG.md is the
+# design record. A fresh clone was missing both. Un-ignored in Phase 5.
 01-java-chat-application-build-guide.md
 LEARNING-LOG.md
+PHASE-5-CONCEPTS.md
+PHASE-5-REPORT.md
 PROTOCOL.md

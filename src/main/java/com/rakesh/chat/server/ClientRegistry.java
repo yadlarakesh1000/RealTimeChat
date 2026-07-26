@@ -51,17 +51,36 @@ public class ClientRegistry {
     }
 
 
+    /**
+     * Fan out one line to everyone except {@code except}.
+     *
+     * <p>Serialised once, not once per recipient: the wire bytes are identical for all of
+     * them, and {@code serialize()} is the only part of a broadcast that is not O(1).
+     *
+     * <p><b>Overflow calls {@link ClientHandler#kick}, not {@code cleanup()}.</b> Phase 3
+     * called {@code cleanup()} here, which was a latent stall: {@code cleanup()} joins the
+     * slow client's writer thread for up to a second and then broadcasts its {@code LEFT}
+     * — <i>on this thread</i>, nested inside this loop. So disconnecting a slow consumer
+     * blocked the very broadcast that the per-client outbox exists to keep unblocked, and
+     * two slow clients in one pass could stall a healthy sender for two seconds. {@code
+     * kick()} closes the socket and returns; the doomed client's own thread does the rest.
+     */
     public void broadcast(Message message, ClientHandler except) {
         String wireLine = message.serialize();
 
+        // ConcurrentHashMap's iterator is weakly consistent: it never throws
+        // ConcurrentModificationException, and it may or may not reflect a registration
+        // that happens mid-iteration. For a broadcast that is exactly the right guarantee
+        // — a client who joins halfway through simply misses a message sent before it
+        // arrived, which is what "before it arrived" means.
         for (ClientHandler client : clientsByNickname.values()) {
             if (client == except) {
                 continue;
             }
             if (!client.sendSerialized(wireLine)) {
-                System.err.println("Outbox full for " + client.getNickname()
-                        + "; disconnecting slow consumer.");
-                client.cleanup();
+                ServerLog.warn("OUTBOX_FULL", client.getNickname(),
+                        "disconnecting slow consumer");
+                client.kick("outbox overflow");
             }
         }
     }
