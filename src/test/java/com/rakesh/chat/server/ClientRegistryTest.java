@@ -86,7 +86,7 @@ public class ClientRegistryTest {
 
     @BeforeEach
     public void setUp() throws IOException {
-        // Use port 0 to bind to any free ephemeral port
+
         server = new ChatServer(0);
         registry = server.getRegistry();
     }
@@ -98,22 +98,22 @@ public class ClientRegistryTest {
 
     @Test
     public void testRegisterAndFind() throws IOException {
-        MockSocket socket1 = new MockSocket("Alice\n");
+        MockSocket socket1 = new MockSocket("HELLO 1 Alice\n");
         ClientHandler handler1 = new ClientHandler(socket1, server);
 
-        // Register nickname "Alice"
+  
         assertTrue(registry.register("Alice", handler1));
 
-        // Duplicate registration should fail (even with different casing)
+
         MockSocket socket2 = new MockSocket("alice\n");
         ClientHandler handler2 = new ClientHandler(socket2, server);
         assertFalse(registry.register("alice", handler2));
         assertFalse(registry.register("ALICE", handler2));
 
-        // Registry size should be 1
+
         assertEquals(1, registry.size());
 
-        // Find should succeed case-insensitively
+
         Optional<ClientHandler> found = registry.find("alice");
         assertTrue(found.isPresent());
         assertSame(handler1, found.get());
@@ -127,15 +127,13 @@ public class ClientRegistryTest {
         MockSocket socket2 = new MockSocket("Alice\n");
         ClientHandler handler2 = new ClientHandler(socket2, server);
 
-        // Register handler1 under "Alice"
         assertTrue(registry.register("Alice", handler1));
 
-        // Try to unregister "Alice" using handler2 (should be a no-op / conditional fail)
+     
         registry.unregister("Alice", handler2);
         assertEquals(1, registry.size());
         assertSame(handler1, registry.find("Alice").get());
 
-        // Unregister using handler1 (should succeed)
         registry.unregister("Alice", handler1);
         assertEquals(0, registry.size());
         assertFalse(registry.find("Alice").isPresent());
@@ -146,14 +144,15 @@ public class ClientRegistryTest {
         PipedMockSocket socket1 = new PipedMockSocket();
         ClientHandler handler1 = new ClientHandler(socket1, server);
 
-        // Run handler1.run() in a separate thread to let it perform the handshake and set nickname.
+
         ExecutorService testPool = Executors.newSingleThreadExecutor();
         testPool.execute(handler1);
 
-        // Feed nickname to client input stream
-        socket1.writeInput("Alice\n");
+        // Phase 4: registration now goes through the protocol handshake, not a bare
+        // nickname line.
+        socket1.writeInput("HELLO 1 Alice\n");
 
-        // Wait a brief moment for the reader thread to process "Alice" and register
+      
         try {
             Thread.sleep(200);
         } catch (InterruptedException e) {
@@ -199,12 +198,11 @@ public class ClientRegistryTest {
             });
         }
 
-        // Start all threads at the exact same time
+     
         startLatch.countDown();
         endLatch.await();
         pool.shutdown();
 
-        // Exactly one thread must have successfully registered the nickname "Bob"
         assertEquals(1, successCount.get());
         assertEquals(1, registry.size());
     }

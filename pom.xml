@@ -34,6 +34,17 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.2.5</version>
       </plugin>
+
+      <!-- Pinned so the checkpoint command in PROTOCOL.md resolves the same plugin
+           version every time, rather than whatever the prefix lookup finds today. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.2.0</version>
+        <configuration>
+          <mainClass>com.rakesh.chat.server.ChatServer</mainClass>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
 

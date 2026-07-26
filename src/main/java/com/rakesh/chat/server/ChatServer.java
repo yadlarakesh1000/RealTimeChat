@@ -41,6 +41,10 @@ public class ChatServer {
         return registry;
     }
 
+    public int getPort() {
+        return serverSocket.getLocalPort();
+    }
+
     public void decrementActiveConnections() {
         activeConnections.decrementAndGet();
     }
@@ -50,7 +54,8 @@ public class ChatServer {
         running = true;
 
         System.out.println("====================================");
-        System.out.println("Server started on port " + PORT);
+        // getPort(), not PORT: they differ whenever a port was passed to the constructor.
+        System.out.println("Server started on port " + getPort());
         System.out.println("Waiting for clients...");
         System.out.println("====================================");
 
