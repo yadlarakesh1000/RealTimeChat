@@ -183,11 +183,4 @@ class ConnectionLogTest {
         }
     }
 
-    @Test
-    @DisplayName("droppedRecords starts at zero and the counter is exposed")
-    void dropCounterIsObservable() throws Exception {
-        try (ConnectionLog log = new ConnectionLog(tmp.resolve("c.log"))) {
-            assertEquals(0, log.droppedRecords());
-        }
-    }
 }

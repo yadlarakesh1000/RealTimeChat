@@ -4,35 +4,17 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Server <b>policy</b> on nicknames, as distinct from protocol <b>syntax</b>.
+ * The rules <i>this server</i> applies to a nickname a client asks for: 3–16 characters,
+ * letters/digits/underscore only, and not one of a few reserved names.
  *
- * <p>This split is the whole point of the class, and it is worth being precise about:
+ * <p>These are stricter than the rules in {@code Message} (PROTOCOL.md §2.4), and that is
+ * on purpose. {@code Message} only asks "can this nickname be written on the wire?", which
+ * has to stay loose, because the client uses the same parser to read {@code JOINED} and
+ * {@code USERS} lines about other people. If the parser also enforced this server's
+ * policy, a client would reject perfectly valid lines about users who really are online.
  *
- * <table border="1">
- *   <caption>Two different questions about the same string</caption>
- *   <tr><th></th><th>{@code Message}/PROTOCOL.md §2.4</th><th>{@code NicknamePolicy}</th></tr>
- *   <tr><td>Question</td>
- *       <td>Can this string be <i>represented</i> on the wire?</td>
- *       <td>Will <i>this server</i> hand it out?</td></tr>
- *   <tr><td>Rule</td>
- *       <td>non-empty, ≤32 chars, no space, no comma, no control char</td>
- *       <td>3–16 chars, {@code [A-Za-z0-9_]} only, not reserved</td></tr>
- *   <tr><td>Applies to</td>
- *       <td>every nickname field in every verb, both directions</td>
- *       <td>only the nickname a client <i>requests</i> in {@code HELLO}</td></tr>
- *   <tr><td>Lives in</td><td>{@code common}</td><td>{@code server}</td></tr>
- * </table>
- *
- * <p><b>Why they cannot be the same check.</b> The syntax rule has to be the looser one,
- * because the client parses {@code JOINED}, {@code CHAT} and {@code USERS} with the same
- * code. If {@code Message.parse} enforced the policy, then tightening the policy on the
- * server — or federating with a server that allows 20-character names — would make
- * clients reject perfectly well-formed lines describing users who are demonstrably
- * online. Policy belongs to whoever issues the resource; syntax belongs to the wire.
- *
- * <p>Rejection is reported as {@code ERROR MALFORMED}, and it closes the connection,
- * because it happens during the handshake and the handshake either completes or the
- * connection ends (PROTOCOL.md §3).
+ * <p>Rejection sends {@code ERROR MALFORMED} and closes the connection, because it happens
+ * during the handshake.
  */
 public final class NicknamePolicy {
 
@@ -83,15 +65,12 @@ public final class NicknamePolicy {
     }
 
     /**
-     * ASCII-only by design, and explicitly <i>not</i> {@link Character#isLetterOrDigit}.
+     * Plain ASCII only, on purpose — not {@link Character#isLetterOrDigit}.
      *
-     * <p>{@code isLetterOrDigit} accepts the whole Unicode letter category, which admits
-     * homoglyphs: Cyrillic {@code а} (U+0430) renders identically to Latin {@code a} in
-     * every font, so {@code аlice} and {@code alice} would be two visually indistinguishable
-     * users. Case-insensitive uniqueness cannot save you from that; only restricting the
-     * alphabet can. The cost is real — this rule excludes most of the world's scripts —
-     * and the honest fix is Unicode normalisation plus a confusable-skeleton check
-     * (UTS&nbsp;#39), which is out of scope here. Saying that out loud is the point.
+     * <p>{@code isLetterOrDigit} would accept the Cyrillic letter {@code а} (U+0430), which
+     * looks exactly like the Latin {@code a} in every font. Then {@code аlice} and
+     * {@code alice} would be two different users that nobody can tell apart. The downside
+     * is real: this rule excludes most of the world's alphabets.
      */
     private static boolean isAllowed(char c) {
         return (c >= 'a' && c <= 'z')

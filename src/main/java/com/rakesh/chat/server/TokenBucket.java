@@ -1,65 +1,32 @@
 package com.rakesh.chat.server;
 
-import java.util.concurrent.TimeUnit;
-
 /**
- * A token bucket: {@code capacity} operations may happen at once, and the allowance
- * refills smoothly to full over {@code window}.
+ * A token bucket, used to stop one client from flooding the server.
  *
- * <p><b>Why token bucket and not leaky bucket.</b> A leaky bucket enforces a strictly
- * even output rate — one message per second, no exceptions. That is right for protecting
- * a downstream system with a fixed service rate. Chat is not that: real typing is bursty,
- * and a user who pastes three lines in a row is behaving normally. A token bucket permits
- * a burst up to {@code capacity} and then degrades to the sustained rate, which is
- * exactly the shape of legitimate traffic. Leaky bucket would rate-limit a normal human.
+ * <p>The idea: the bucket holds up to {@code capacity} tokens and starts full. Sending a
+ * message costs one token. Tokens trickle back in over time, so the bucket refills to
+ * full in {@code windowMillis}. If the bucket is empty, the message is refused.
  *
- * <h2>Arithmetic, and why there is no floating point here</h2>
+ * <p>Why a token bucket and not a "leaky bucket"? A leaky bucket forces a perfectly even
+ * rate, like one message every 500 ms. Real people type in bursts — you paste three lines,
+ * then say nothing for a minute — so a leaky bucket would tell a normal user to slow down.
+ * A token bucket allows the burst and only complains if it keeps going.
  *
- * The obvious implementation stores {@code double tokens} and adds
- * {@code elapsed * rate} on every call. It has two defects:
- *
- * <ol>
- *   <li><b>Truncation starvation.</b> With integer tokens and a client calling every few
- *       microseconds, each refill computes to zero, but {@code lastRefill} is advanced
- *       anyway — so the bucket never refills at all. The bug only appears under exactly
- *       the load the limiter exists for.</li>
- *   <li><b>Drift.</b> Repeated {@code double} accumulation is not associative; two buckets
- *       given identical inputs can disagree.</li>
- * </ol>
- *
- * <p>Both vanish if the unit of credit is <i>time</i> rather than a scaled count. This
- * class stores {@code creditNanos}, capped at {@code windowNanos}; elapsed nanoseconds
- * are added one-for-one, and one message costs {@code windowNanos / capacity} nanos.
- * Exact integer arithmetic, no remainder to lose, no scaling factor to pick.
- *
- * <h2>The clock</h2>
- *
- * {@link System#nanoTime()}, never {@code currentTimeMillis()}. Wall-clock time can jump
- * backwards — NTP correction, a VM resuming from a snapshot, a user fixing the timezone.
- * A backwards jump on a wall clock makes {@code elapsed} negative and hands out unlimited
- * credit, which is a rate limiter that stops limiting at the exact moment infrastructure
- * is misbehaving. {@code nanoTime} is monotonic and has no meaning except as a difference,
- * which is all a limiter ever needs.
- *
- * <h2>Thread safety</h2>
- *
- * Every method is {@code synchronized}. In this server only the owning reader thread
- * calls {@link #tryConsume()}, so the lock is always uncontended and costs a biased/thin
- * lock acquisition — but "currently only one thread touches it" is a property of the
- * caller, not of this class, and the next caller will not read this sentence.
+ * <p>Time is measured with {@link System#nanoTime()} and not {@code currentTimeMillis()},
+ * because the wall clock can jump backwards (for example when the machine syncs its time).
+ * A backwards jump would make "time elapsed" negative and hand out free tokens.
  */
-public final class TokenBucket {
+public class TokenBucket {
 
-    private final long windowNanos;
-    private final long costNanos;
+    private final int capacity;
+    private final double tokensPerNano;
 
-    /** Available credit, in nanoseconds of elapsed time. Range {@code [0, windowNanos]}. */
-    private long creditNanos;
-    private long lastNanos;
+    private double tokens;
+    private long lastCheckNanos;
 
     /**
-     * @param capacity     how many operations may burst at once, and how many refill per window
-     * @param windowMillis the refill window
+     * @param capacity     how many messages may be sent in one burst
+     * @param windowMillis how long a full refill takes
      */
     public TokenBucket(int capacity, int windowMillis) {
         if (capacity <= 0) {
@@ -68,45 +35,35 @@ public final class TokenBucket {
         if (windowMillis <= 0) {
             throw new IllegalArgumentException("windowMillis must be positive, was " + windowMillis);
         }
-        this.windowNanos = TimeUnit.MILLISECONDS.toNanos(windowMillis);
-        this.costNanos = Math.max(1, windowNanos / capacity);
-        this.creditNanos = windowNanos; // buckets start full: a new client may burst immediately
-        this.lastNanos = System.nanoTime();
+        this.capacity = capacity;
+        this.tokensPerNano = capacity / (windowMillis * 1_000_000.0);
+        this.tokens = capacity;   // a brand new client may burst straight away
+        this.lastCheckNanos = System.nanoTime();
     }
 
-    /**
-     * Take one token if one is available.
-     *
-     * @return {@code true} if the operation is allowed; {@code false} if it must be
-     *         refused. Never blocks and never sleeps — a rate limiter that blocks has
-     *         turned a rejection into a thread leak.
-     */
+    /** Takes one token if there is one. Returns false if the client must be refused. */
     public synchronized boolean tryConsume() {
-        refill(System.nanoTime());
-        if (creditNanos >= costNanos) {
-            creditNanos -= costNanos;
+        refill();
+        if (tokens >= 1.0) {
+            tokens -= 1.0;
             return true;
         }
         return false;
     }
 
-    /** How many whole operations are allowed right now. Diagnostics and tests only. */
+    /** How many whole messages are allowed right now. Used by tests. */
     public synchronized long availableTokens() {
-        refill(System.nanoTime());
-        return creditNanos / costNanos;
+        refill();
+        return (long) tokens;
     }
 
-    private void refill(long now) {
-        long elapsed = now - lastNanos;
-        lastNanos = now;
-        if (elapsed <= 0) {
-            // nanoTime is monotonic, so this is either a same-nanosecond call or the
-            // documented coarse-resolution case. Either way: no credit, no harm.
-            return;
+    /** Adds the tokens earned since the last call, never going above the capacity. */
+    private void refill() {
+        long now = System.nanoTime();
+        long elapsedNanos = now - lastCheckNanos;
+        lastCheckNanos = now;
+        if (elapsedNanos > 0) {
+            tokens = Math.min(capacity, tokens + elapsedNanos * tokensPerNano);
         }
-        // Clamped before the add, so creditNanos + elapsed cannot overflow after a long idle.
-        creditNanos = (elapsed >= windowNanos)
-                ? windowNanos
-                : Math.min(windowNanos, creditNanos + elapsed);
     }
 }

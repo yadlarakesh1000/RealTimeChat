@@ -11,11 +11,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
- * Who is online, keyed case-insensitively.
+ * The list of who is online, looked up by nickname (ignoring upper/lower case).
  *
- * <p>{@link ConcurrentHashMap} rather than a synchronized map: registration is a
- * check-then-act ({@code putIfAbsent}) that must be atomic without serialising every
- * broadcast behind the same lock. See LEARNING-LOG.md, Phase 3.
+ * <p>A {@link ConcurrentHashMap} rather than a normal map with {@code synchronized} around
+ * it, because {@code putIfAbsent} lets us claim a nickname in one atomic step without
+ * making every broadcast queue up behind the same lock. See LEARNING-LOG.md, Phase 3.
+ *
+ * <p>{@link #find(String)} is what makes Phase 6 private messaging possible: it turns a
+ * nickname typed by one user into the handler object for another user's socket.
  */
 public class ClientRegistry {
 
@@ -52,27 +55,26 @@ public class ClientRegistry {
 
 
     /**
-     * Fan out one line to everyone except {@code except}.
+     * Send one line to everyone except {@code except}.
      *
-     * <p>Serialised once, not once per recipient: the wire bytes are identical for all of
-     * them, and {@code serialize()} is the only part of a broadcast that is not O(1).
+     * <p>Private messages never come through here — see
+     * {@code ClientHandler.sendPrivateMessage}. That is the privacy boundary for Phase 6:
+     * if a whisper cannot reach this method, it cannot leak to the room.
      *
-     * <p><b>Overflow calls {@link ClientHandler#kick}, not {@code cleanup()}.</b> Phase 3
-     * called {@code cleanup()} here, which was a latent stall: {@code cleanup()} joins the
-     * slow client's writer thread for up to a second and then broadcasts its {@code LEFT}
-     * — <i>on this thread</i>, nested inside this loop. So disconnecting a slow consumer
-     * blocked the very broadcast that the per-client outbox exists to keep unblocked, and
-     * two slow clients in one pass could stall a healthy sender for two seconds. {@code
-     * kick()} closes the socket and returns; the doomed client's own thread does the rest.
+     * <p>The line is turned into text once, not once per client, because the bytes are the
+     * same for everybody.
+     *
+     * <p>If a client's outbox is full we {@link ClientHandler#kick} them rather than
+     * calling {@code cleanup()}. {@code cleanup()} waits up to a second for that client's
+     * writer thread, and it would do that waiting <i>on this thread</i>, in the middle of
+     * this loop — so removing one slow client would stall the broadcast for everyone else.
      */
     public void broadcast(Message message, ClientHandler except) {
         String wireLine = message.serialize();
 
-        // ConcurrentHashMap's iterator is weakly consistent: it never throws
-        // ConcurrentModificationException, and it may or may not reflect a registration
-        // that happens mid-iteration. For a broadcast that is exactly the right guarantee
-        // — a client who joins halfway through simply misses a message sent before it
-        // arrived, which is what "before it arrived" means.
+        // ConcurrentHashMap's iterator never throws ConcurrentModificationException, and it
+        // may or may not include someone who joins while we are looping. That is fine: a
+        // client who joins halfway through just misses a message sent before they arrived.
         for (ClientHandler client : clientsByNickname.values()) {
             if (client == except) {
                 continue;

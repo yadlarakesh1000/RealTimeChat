@@ -22,12 +22,18 @@ logs/
 Thumbs.db
 .DS_Store
 
-# NOTE: PROTOCOL.md, LEARNING-LOG.md and the build guide were listed here and were
-# therefore never committed. They are deliverables, not artifacts — PROTOCOL.md is the
-# frozen wire specification a second implementer would need, and LEARNING-LOG.md is the
-# design record. A fresh clone was missing both. Un-ignored in Phase 5.
+# Local-only working documents and notes.
+#
+# NOTE: these are project deliverables, not build artifacts — PROTOCOL.md is the wire
+# specification a second implementer would need, LEARNING-LOG.md is the design record, and
+# Phase 10 requires both to be linked from the README. Kept out of the repository by
+# choice; a fresh clone will not have them, and will have no Phase 6 tests. Delete the
+# lines below to include them.
 01-java-chat-application-build-guide.md
 LEARNING-LOG.md
 PHASE-5-CONCEPTS.md
 PHASE-5-REPORT.md
+PHASE-6-CONCEPTS.md
+PHASE-6-REPORT.md
 PROTOCOL.md
+src/test/java/com/rakesh/chat/server/Phase6Test.java

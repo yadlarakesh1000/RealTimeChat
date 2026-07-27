@@ -48,19 +48,29 @@ class Phase5Test {
 
     /** Starts a server on an ephemeral port with a per-test log file. */
     private void startServer(ServerConfig config) throws IOException {
-        server = new ChatServer(config.withPort(0)
-                .withConnectionLogPath(tmp.resolve("connections.log")));
+        config.port = 0;                                            // any free port
+        config.connectionLogPath = tmp.resolve("connections.log");  // don't touch logs/
+        server = new ChatServer(config);
         Thread acceptor = new Thread(server::start, "test-acceptor");
         acceptor.setDaemon(true);
         acceptor.start();
     }
 
     private void startServer() throws IOException {
-        startServer(ServerConfig.defaults());
+        startServer(new ServerConfig());
     }
 
     private RawClient connect() throws IOException {
         return track(new RawClient(server.getPort()));
+    }
+
+    /** A config with only the rate-limit numbers changed. */
+    private static ServerConfig rateLimit(int burst, int windowMillis, int violationsBeforeKick) {
+        ServerConfig config = new ServerConfig();
+        config.rateBurst = burst;
+        config.rateWindowMillis = windowMillis;
+        config.rateViolationsBeforeKick = violationsBeforeKick;
+        return config;
     }
 
     private RawClient track(RawClient c) {
@@ -125,7 +135,9 @@ class Phase5Test {
         @Test
         @DisplayName("silence past the deadline -> ERROR TIMEOUT, then close")
         void silentClientIsReaped() throws Exception {
-            startServer(ServerConfig.defaults().withHandshakeTimeoutMillis(300));
+            ServerConfig config = new ServerConfig();
+            config.handshakeTimeoutMillis = 300;
+            startServer(config);
 
             RawClient lurker = connect();
             // No HELLO. The connection costs a pooled thread and a file descriptor, and an
@@ -142,7 +154,9 @@ class Phase5Test {
         @Test
         @DisplayName("dribbling bytes with no newline does not extend the deadline")
         void aPartialLineDoesNotResetTheDeadline() throws Exception {
-            startServer(ServerConfig.defaults().withHandshakeTimeoutMillis(400));
+            ServerConfig config = new ServerConfig();
+            config.handshakeTimeoutMillis = 400;
+            startServer(config);
 
             RawClient dripper = connect();
             for (int i = 0; i < 6; i++) {
@@ -163,9 +177,10 @@ class Phase5Test {
         @Test
         @DisplayName("a client that says HELLO in time is not reaped")
         void promptClientSurvivesTheDeadline() throws Exception {
-            startServer(ServerConfig.defaults()
-                    .withHandshakeTimeoutMillis(300)
-                    .withIdleTimeoutMillis(60_000));
+            ServerConfig config = new ServerConfig();
+            config.handshakeTimeoutMillis = 300;
+            config.idleTimeoutMillis = 60_000;
+            startServer(config);
 
             RawClient alice = connect().helloAs("alice");
             Thread.sleep(600); // well past the handshake deadline
@@ -179,9 +194,10 @@ class Phase5Test {
         @Test
         @DisplayName("an idle established connection is eventually reaped too")
         void idleTimeoutAppliesAfterTheHandshake() throws Exception {
-            startServer(ServerConfig.defaults()
-                    .withHandshakeTimeoutMillis(5000)
-                    .withIdleTimeoutMillis(300));
+            ServerConfig config = new ServerConfig();
+            config.handshakeTimeoutMillis = 5000;
+            config.idleTimeoutMillis = 300;
+            startServer(config);
 
             RawClient alice = connect().helloAs("alice");
 
@@ -193,7 +209,9 @@ class Phase5Test {
         @Test
         @DisplayName("the deadline is audited as HANDSHAKE_FAIL, not DISCONNECT")
         void deadlineIsAudited() throws Exception {
-            startServer(ServerConfig.defaults().withHandshakeTimeoutMillis(300));
+            ServerConfig config = new ServerConfig();
+            config.handshakeTimeoutMillis = 300;
+            startServer(config);
 
             RawClient lurker = connect();
             lurker.expectError(ErrorCode.TIMEOUT);
@@ -357,7 +375,7 @@ class Phase5Test {
 
         /** Burst 5; a window long enough that no refill happens mid-test; kick at 50. */
         private ServerConfig limited() {
-            return ServerConfig.defaults().withRateLimit(5, 60_000, 50);
+            return rateLimit(5, 60_000, 50);
         }
 
         @Test
@@ -452,7 +470,7 @@ class Phase5Test {
         void theBucketRefills() throws Exception {
             // 3 per 2 s — a wide window so the three sends below cannot be spaced far
             // enough apart by a slow machine to earn a refill mid-test.
-            startServer(ServerConfig.defaults().withRateLimit(3, 2000, 50));
+            startServer(rateLimit(3, 2000, 50));
 
             RawClient alice = connect().helloAs("alice");   // 1 of 3
             RawClient bob = connect().helloAs("bob");
@@ -475,7 +493,7 @@ class Phase5Test {
         @Test
         @DisplayName("persistent abuse is kicked and audited as KICKED, with a reason")
         void persistentAbuseIsDisconnected() throws Exception {
-            startServer(ServerConfig.defaults().withRateLimit(3, 60_000, 5));
+            startServer(rateLimit(3, 60_000, 5));
 
             RawClient flooder = connect().helloAs("flooder");
             for (int i = 0; i < 40; i++) {
@@ -498,7 +516,7 @@ class Phase5Test {
         @Test
         @DisplayName("one client's flood does not limit anyone else")
         void limitsArePerConnection() throws Exception {
-            startServer(ServerConfig.defaults().withRateLimit(3, 60_000, 50));
+            startServer(rateLimit(3, 60_000, 50));
 
             RawClient flooder = connect().helloAs("flooder");
             RawClient bob = connect().helloAs("bob");
@@ -727,7 +745,9 @@ class Phase5Test {
         @Test
         @DisplayName("past maxClients, a new connection is closed immediately")
         void serverFullRejects() throws Exception {
-            startServer(ServerConfig.defaults().withMaxClients(1));
+            ServerConfig config = new ServerConfig();
+            config.maxClients = 1;
+            startServer(config);
 
             connect().helloAs("alice");
             await("alice to occupy the slot", () -> server.activeConnections() == 1);
@@ -747,7 +767,9 @@ class Phase5Test {
         @Test
         @DisplayName("shutdown also closes connections that never said HELLO")
         void shutdownReachesUnhandshakenConnections() throws Exception {
-            startServer(ServerConfig.defaults().withHandshakeTimeoutMillis(60_000));
+            ServerConfig config = new ServerConfig();
+            config.handshakeTimeoutMillis = 60_000;
+            startServer(config);
 
             connect().helloAs("alice");
             RawClient lurker = connect();
@@ -791,9 +813,9 @@ class Phase5Test {
         @Test
         @DisplayName("dropping a stalled client does not stall the sender")
         void overflowDisconnectDoesNotBlockTheBroadcaster() throws Exception {
-            startServer(ServerConfig.defaults()
-                    .withOutboxCapacity(4)
-                    .withRateLimit(100_000, 1000, 1_000_000));
+            ServerConfig config = rateLimit(100_000, 1000, 1_000_000);
+            config.outboxCapacity = 4;
+            startServer(config);
 
             RawClient sender = connect().helloAs("sender");
             RawClient stalled = track(new RawClient(server.getPort(), 512)).helloAs("stalled");

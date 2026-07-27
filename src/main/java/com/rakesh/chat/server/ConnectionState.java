@@ -11,14 +11,10 @@ import com.rakesh.chat.common.MessageType;
  *       └───────────────────────────┴────────────────────────────────┴──▶ CLOSING
  * </pre>
  *
- * <p>Phase 4 inferred this from {@code nickname == null} and from <i>which method was on
- * the stack</i> — {@code handshake()} meant pre-login, {@code readLoop()} meant post.
- * That works right up until a third state is needed, at which point the state lives in
- * the control flow and cannot be queried, logged, or tested.
- *
- * <p>The value of naming the states is {@link #permits(MessageType)}: command legality
- * becomes a property of the state rather than a scatter of {@code if} statements in the
- * dispatcher. Adding a state in Phase 9 (AWAITING_PONG) means editing one enum.
+ * <p>Before Phase 5 the server worked out the state by checking whether {@code nickname}
+ * was null and which method it happened to be inside. Naming the states means the rule
+ * "which commands are legal right now" lives in one place ({@link #permits(MessageType)})
+ * instead of being spread over a pile of {@code if} statements.
  */
 public enum ConnectionState {
 
@@ -26,26 +22,24 @@ public enum ConnectionState {
     CONNECTED,
 
     /**
-     * The nickname is reserved in the registry but the join has not been announced.
-     * Transient — the handler passes through it in a few microseconds. It exists so that
-     * "holds a registry entry" and "has been announced to the room" are separable, which
-     * is exactly the distinction {@code cleanup()} needs to decide whether to emit
-     * {@code LEFT}.
+     * The nickname is taken in the registry, but the room has not been told yet. The
+     * handler is only in this state for a few microseconds. It is worth having, because
+     * "owns a nickname" and "has been announced with JOINED" are different facts, and
+     * cleanup needs the difference to decide whether to send {@code LEFT}.
      */
     NAMED,
 
-    /** Fully joined. {@code MSG}, {@code PM}, {@code LIST}, {@code QUIT} are legal. */
+    /** Fully joined. {@code MSG}, {@code PM}, {@code REPLY}, {@code LIST}, {@code QUIT} are legal. */
     ACTIVE,
 
-    /** Cleanup has begun. No further commands are accepted; the outbox is draining. */
+    /** The connection is shutting down. No more commands are accepted. */
     CLOSING;
 
     /**
-     * Is {@code type} a legal thing for the <i>peer</i> to send while we are in this state?
+     * Is the client allowed to send this kind of message right now?
      *
-     * <p>Server-to-client verbs are never legal from a client, in any state — that check
-     * belongs here rather than in the dispatcher so there is one answer to "is this line
-     * allowed", not two.
+     * <p>Server-to-client verbs (like {@code CHAT}) are never legal from a client in any
+     * state, so that check lives here too — one method answers "is this line allowed".
      */
     public boolean permits(MessageType type) {
         if (type == null || !type.fromClient()) {
@@ -60,9 +54,9 @@ public enum ConnectionState {
     }
 
     /**
-     * Guards the transition table. Called by the setter so an illegal transition fails
-     * loudly in a test rather than silently producing a connection in a state its own
-     * code does not expect.
+     * Is moving from this state to {@code next} allowed? The handler calls this before
+     * changing state, so a mistake in our own code crashes a test instead of quietly
+     * leaving a connection in a state the rest of the code does not expect.
      */
     public boolean canTransitionTo(ConnectionState next) {
         if (next == null || next == this) {

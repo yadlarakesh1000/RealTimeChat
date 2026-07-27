@@ -27,18 +27,13 @@ public class ChatServer {
     private final ConnectionLog connectionLog;
 
     /**
-     * <b>Every</b> live connection, including those that have not completed a handshake.
+     * Every live connection, including ones that have not said HELLO yet.
      *
-     * <p>Phase 4 tracked only a count, and shutdown iterated the <i>registry</i> — which
-     * by construction contains only clients that already said {@code HELLO}. A peer that
-     * connected and stayed silent was therefore invisible to shutdown: its reader thread
-     * stayed blocked in {@code read()}, {@code awaitTermination} timed out, and
-     * {@code shutdownNow()} could not help either, because interrupting a thread parked in
-     * blocking socket I/O does nothing. Closing its socket is the only thing that does,
-     * and you cannot close a socket you are not holding a reference to.
-     *
-     * <p>{@code newKeySet()} is a {@code ConcurrentHashMap} in disguise: add and remove are
-     * called from many threads and the only read is the shutdown sweep.
+     * <p>The registry only knows about clients that finished the handshake, so shutdown
+     * could not close a client that connected and then stayed silent — its thread just sat
+     * in {@code read()} forever. Interrupting a thread blocked on socket I/O does nothing;
+     * closing its socket is the only thing that works, and for that you need a reference to
+     * it. Hence this set. (LEARNING-LOG.md, B5.)
      */
     private final Set<ClientHandler> liveHandlers = ConcurrentHashMap.newKeySet();
 
@@ -49,9 +44,15 @@ public class ChatServer {
         this(ServerConfig.defaults());
     }
 
-    /** Convenience for tests: default configuration on {@code port} (0 = ephemeral). */
+    /** Convenience for tests: default settings, but on the given port (0 = any free port). */
     public ChatServer(int port) throws IOException {
-        this(ServerConfig.defaults().withPort(port));
+        this(portOnly(port));
+    }
+
+    private static ServerConfig portOnly(int port) {
+        ServerConfig config = new ServerConfig();
+        config.port = port;
+        return config;
     }
 
     public ChatServer(ServerConfig config) throws IOException {
@@ -61,15 +62,15 @@ public class ChatServer {
         // TIME_WAIT, and SO_REUSEADDR is what lets the new process bind anyway.
         this.serverSocket = new ServerSocket();
         this.serverSocket.setReuseAddress(true);
-        this.serverSocket.bind(new InetSocketAddress(config.port()));
+        this.serverSocket.bind(new InetSocketAddress(config.port));
 
         // Fixed, not cached: a cached pool creates one thread per connection with no
         // ceiling, so a connection flood becomes an OutOfMemoryError instead of a refusal.
         // A fixed pool degrades by queueing, and the explicit capacity check below turns
         // that queueing into an honest rejection.
-        this.pool = Executors.newFixedThreadPool(config.maxClients());
+        this.pool = Executors.newFixedThreadPool(config.maxClients);
         this.registry = new ClientRegistry();
-        this.connectionLog = new ConnectionLog(config.connectionLogPath());
+        this.connectionLog = new ConnectionLog(config.connectionLogPath);
     }
 
     public ClientRegistry getRegistry() {
@@ -102,9 +103,9 @@ public class ChatServer {
         running = true;
 
         System.out.println("====================================");
-        // getPort(), not config.port(): they differ whenever port 0 was requested.
+        // getPort(), not config.port: they differ whenever port 0 was requested.
         System.out.println("Server started on port " + getPort());
-        System.out.println("Connection log: " + config.connectionLogPath().toAbsolutePath());
+        System.out.println("Connection log: " + config.connectionLogPath.toAbsolutePath());
         System.out.println("Waiting for clients...");
         System.out.println("====================================");
 
@@ -113,9 +114,9 @@ public class ChatServer {
                 Socket socket = serverSocket.accept();
 
                 // Only the acceptor thread runs this, so size-then-add is not a race.
-                if (liveHandlers.size() >= config.maxClients()) {
+                if (liveHandlers.size() >= config.maxClients) {
                     ServerLog.warn("REJECTED", String.valueOf(socket.getRemoteSocketAddress()),
-                            "server full (" + config.maxClients() + ")");
+                            "server full (" + config.maxClients + ")");
                     closeQuietly(socket);
                     continue;
                 }
@@ -160,18 +161,17 @@ public class ChatServer {
     }
 
     /**
-     * Stop accepting, end every live connection, then wind down the pool.
+     * Stop accepting, end every live connection, then shut the thread pool down.
      *
-     * <p>The order matters and each step exists for a different reason:
+     * <p>The order matters:
      * <ol>
-     *   <li>{@code running = false} then close the {@code ServerSocket} — the flag makes
-     *       the resulting {@code SocketException} recognisable as intentional.</li>
-     *   <li>{@code kick()} every live handler. This is what actually ends the connections;
-     *       the pool cannot, because its threads are parked in blocking reads.</li>
-     *   <li>{@code shutdown()} refuses new tasks and lets running ones finish;
-     *       {@code awaitTermination} gives them a bounded window; {@code shutdownNow()}
-     *       interrupts whatever is left. All three, because each handles a different
-     *       failure: a task that has not started, one that is finishing, one that is stuck.</li>
+     *   <li>{@code running = false}, then close the ServerSocket. The flag is what tells us
+     *       the {@code SocketException} that follows was on purpose.</li>
+     *   <li>{@code kick()} every live handler — this is what actually ends the connections,
+     *       because the pool's threads are all sitting inside a blocking read.</li>
+     *   <li>{@code shutdown()}, {@code awaitTermination()}, {@code shutdownNow()}. All three,
+     *       because they handle three different cases: a task that has not started, one that
+     *       is finishing, and one that is stuck.</li>
      * </ol>
      */
     public void shutdown() {

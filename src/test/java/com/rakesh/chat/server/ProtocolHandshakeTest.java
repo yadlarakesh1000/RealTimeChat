@@ -46,10 +46,12 @@ class ProtocolHandshakeTest {
 
     @BeforeEach
     void startServer() throws IOException {
-        // Phase 5 defaults, with the log redirected so the suite leaves nothing behind.
-        server = new ChatServer(ServerConfig.defaults()
-                .withPort(0)
-                .withConnectionLogPath(tmp.resolve("connections.log")));
+        // Default settings, but on a free port and with the log redirected so the suite
+        // leaves nothing behind in logs/.
+        ServerConfig config = new ServerConfig();
+        config.port = 0;
+        config.connectionLogPath = tmp.resolve("connections.log");
+        server = new ChatServer(config);
         Thread acceptor = new Thread(server::start, "test-acceptor");
         acceptor.setDaemon(true);
         acceptor.start();
@@ -199,14 +201,18 @@ class ProtocolHandshakeTest {
     }
 
     @Test
-    @DisplayName("PM is refused politely until Phase 6")
-    void pmIsNotImplementedYet() throws Exception {
+    @DisplayName("PM to somebody who is not online -> ERROR NO_SUCH_USER (Phase 6)")
+    void pmToAnOfflineUserIsRefused() throws Exception {
         RawClient alice = connect().helloAs("alice");
         alice.send("PM bob secret");
 
         Message err = alice.expect(MessageType.ERROR);
-        assertEquals(ErrorCode.MALFORMED, err.errorCode());
-        assertTrue(err.body().contains("Phase 6"), err.body());
+        assertEquals(ErrorCode.NO_SUCH_USER, err.errorCode());
+        assertTrue(err.body().contains("bob"), err.body());
+
+        // The connection survives: a bad message kills the message, not the session.
+        alice.send("LIST");
+        assertEquals(MessageType.USERS, alice.read().type());
     }
 
     @Test

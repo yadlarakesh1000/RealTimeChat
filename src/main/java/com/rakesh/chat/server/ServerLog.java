@@ -4,31 +4,17 @@ import java.time.Instant;
 import java.util.Locale;
 
 /**
- * Structured console logging: one line, fixed columns, always the same five facts.
+ * Prints one tidy line to the console for each server event, instead of scattered
+ * {@code System.out.println} calls with no timestamp.
  *
  * <pre>
- * 2026-07-26T10:15:30.123456700Z [reader-alice]   JOINED  alice                    2 online
- * 2026-07-26T10:15:31.007881200Z [reader-bob]     MALFORMED /127.0.0.1:51544       unknown verb: FOO
+ * 2026-07-26T10:15:30.123456700Z [reader-alice] JOINED         alice             2 online
+ * 2026-07-26T10:15:31.007881200Z [reader-bob]   MALFORMED      /127.0.0.1:51544  unknown verb: FOO
  * </pre>
  *
- * <p><b>Why not SLF4J + Logback, which the build guide suggests.</b> A logging facade
- * earns its dependency when libraries in the same process need to bind to the
- * application's logger, when levels have to be reconfigured without a rebuild, or when
- * appenders (rolling files, syslog, JSON) are needed. None of that is true here, and the
- * project has exactly one non-test dependency today — which is the reason a stranger can
- * clone it and run {@code mvn test} offline-ish without a surprise. What Logback would
- * actually buy at this size is the timestamp and the thread name, which is the thirty
- * lines below.
- *
- * <p>The honest caveat, and the interview answer: this is <b>not</b> what I would do in
- * production. It has no levels beyond the three methods here, no way to silence it, and
- * it writes synchronously on the caller's thread. The moment either of those matters,
- * SLF4J's facade is the correct answer precisely <i>because</i> it is a facade — it lets
- * the binding be someone else's decision.
- *
- * <p>{@code System.out}/{@code System.err} are themselves synchronised {@code PrintStream}s,
- * so interleaved lines from many handler threads do not tear. They can still be reordered
- * relative to each other; the timestamp is the ordering authority, not the file position.
+ * <p>A real project would use a logging library such as SLF4J + Logback so the output can
+ * be filtered and sent to files. This is a college project with one dependency, and thirty
+ * lines here buy the two things that actually matter: a timestamp and a thread name.
  */
 final class ServerLog {
 
@@ -52,11 +38,7 @@ final class ServerLog {
     }
 
     private static String format(String event, String who, String detail) {
-        // Locale.ROOT: %-24s is locale-independent, but making every format call in the
-        // codebase explicit means there is no call site to audit later. The same reflex
-        // as specifying UTF-8 on every stream.
-        // 14 = the width of the longest event name (HANDSHAKE_FAIL), so the columns line
-        // up and a human can scan the "who" column without reading the events.
+        // 14 = the length of the longest event name (HANDSHAKE_FAIL), so the columns line up.
         return String.format(Locale.ROOT, "%s [%s] %-14s %-24s %s",
                 Instant.now(),
                 Thread.currentThread().getName(),

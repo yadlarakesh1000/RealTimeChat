@@ -20,53 +20,38 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * One connected client: a reader thread (this {@code run()}), a writer thread draining a
- * bounded outbox, and one {@link ConnectionState}.
- *
- * <h2>Thread ownership — the map of who may touch what</h2>
- *
- * <table border="1">
- *   <caption>Fields by owning thread</caption>
- *   <tr><th>Owner</th><th>State</th></tr>
- *   <tr><td>reader thread only</td>
- *       <td>{@code in}, {@code rateLimiter}, {@code rateViolations}</td></tr>
- *   <tr><td>writer thread only</td><td>{@code out}</td></tr>
- *   <tr><td>any thread</td>
- *       <td>{@code outbox} (a {@code BlockingQueue}), {@code state}, {@code nickname},
- *           {@code closeReason} (all {@code volatile}), {@code cleanedUp} (a CAS)</td></tr>
- * </table>
- *
- * <p>The invariant that makes this safe is that no field is written by two threads without
- * either a queue, a {@code volatile}, or a compare-and-set standing between them, and that
- * {@link #cleanup()} — the one method every exit path funnels through — is guarded by a
- * single CAS so it runs exactly once no matter how many threads race into it.
- *
- * <h2>Two ways a connection ends, and why they are not the same method</h2>
+ * Handles one connected client. Each client gets:
  *
  * <ul>
- *   <li><b>Self-initiated</b> ({@code QUIT}, EOF, {@code TOO_LONG}, a failed handshake,
- *       rate abuse): the reader falls out of its loop and {@code finally} runs
- *       {@link #cleanup()}, which queues a poison pill <i>behind</i> whatever is already
- *       in the outbox. The writer therefore delivers the diagnostic {@code ERROR} line
- *       before the socket closes. This is the Phase 4 B1/B2 lesson, preserved.</li>
- *   <li><b>Externally forced</b> ({@link #kick}): another thread closes the socket
- *       immediately and discards the outbox. Used when the client is provably not reading
- *       (outbox overflow) or when the server is going down. It must not block the caller,
- *       because the caller is usually a <i>different</i> client's reader thread mid-broadcast.</li>
+ *   <li>a <b>reader thread</b> — this class's {@code run()}, reading lines from the socket;</li>
+ *   <li>a <b>writer thread</b> — takes lines off the {@code outbox} queue and writes them;</li>
+ *   <li>a {@link ConnectionState} saying where in the lifecycle this connection is.</li>
  * </ul>
  *
- * <p>Collapsing these into one method is the tempting simplification and it is wrong in
- * both directions: a graceful close called from a broadcaster stalls the broadcast for up
- * to a second per slow client, and a hard close on the {@code NICK_TAKEN} path throws away
- * the very message that explains the disconnect.
+ * <p><b>Who touches what.</b> {@code in} and the rate limiter belong to the reader thread.
+ * {@code out} belongs to the writer thread. Everything other threads can touch is either a
+ * queue or marked {@code volatile}, and {@link #cleanup()} uses a compare-and-set so it
+ * runs exactly once even if several threads reach it together.
+ *
+ * <p><b>Two ways a connection ends.</b>
+ * <ul>
+ *   <li>{@link #cleanup()} — the normal way. The reader falls out of its loop, and a
+ *       "poison pill" is put on the <i>end</i> of the outbox, so anything already queued
+ *       (like the ERROR line explaining the disconnect) still gets written first.</li>
+ *   <li>{@link #kick(String)} — the forced way. Closes the socket immediately and throws
+ *       the queued output away. Used when the client is clearly not reading, or when the
+ *       server is shutting down. It never blocks the caller, because the caller is usually
+ *       another client's thread in the middle of a broadcast.</li>
+ * </ul>
  */
 public class ClientHandler implements Runnable {
 
     /**
-     * Sentinel compared by <b>identity</b>, so a client who literally types
-     * {@code __POISON__} cannot shut down their own writer. {@code new String(...)} is
-     * deliberate and must not be "simplified" to a literal — literals are interned, and
-     * an interned sentinel is forgeable.
+     * The "stop now" marker put on the outbox to tell the writer thread to finish.
+     *
+     * <p>{@code new String(...)} looks pointless but is not: it creates an object that is
+     * only ever equal to itself by {@code ==}. If this were a plain literal, a client who
+     * typed {@code __POISON__} could shut down their own writer thread.
      */
     private static final String POISON = new String("__POISON__");
 
@@ -85,7 +70,7 @@ public class ClientHandler implements Runnable {
     /** Charged for every line read, valid or not — see {@link #readLoop()}. */
     private final TokenBucket rateLimiter;
 
-    /** Reader thread only; no synchronisation needed or wanted. */
+    /** Reader thread only, so no synchronisation is needed. */
     private int rateViolations = 0;
 
     private final String remoteAddress;
@@ -98,11 +83,17 @@ public class ClientHandler implements Runnable {
     private volatile String nickname;
 
     /**
-     * True once {@code JOINED} has been broadcast. Distinct from {@code state == ACTIVE},
-     * which is false again by the time {@link #cleanup()} inspects it — cleanup needs to
-     * know whether this client was ever <i>announced</i>, not what it is doing now.
+     * True once {@code JOINED} has been broadcast. Not the same as {@code state == ACTIVE},
+     * which is already false by the time {@link #cleanup()} looks — cleanup needs to know
+     * whether this client was ever announced, not what it is doing right now.
      */
     private volatile boolean announcedJoin = false;
+
+    /**
+     * Phase 6: who whispered to us most recently, so {@code REPLY} knows where to go.
+     * Written by the <i>sender's</i> reader thread, read by ours, hence {@code volatile}.
+     */
+    private volatile String lastPmFrom;
 
     /** Why the connection ended, for the connection log. First writer wins. */
     private volatile String closeReason;
@@ -125,7 +116,7 @@ public class ClientHandler implements Runnable {
         this.connectedAt = Instant.now();
         this.connectedAtNanos = System.nanoTime();
 
-        this.in = new BoundedLineReader(socket.getInputStream(), config.maxLineBytes());
+        this.in = new BoundedLineReader(socket.getInputStream(), config.maxLineBytes);
 
         this.out = new PrintWriter(
                 new BufferedWriter(
@@ -134,9 +125,9 @@ public class ClientHandler implements Runnable {
                                 StandardCharsets.UTF_8)),
                 true); // autoFlush on println()
 
-        this.outbox = new LinkedBlockingQueue<>(config.outboxCapacity());
+        this.outbox = new LinkedBlockingQueue<>(config.outboxCapacity);
         this.writerThread = new Thread(this::writerLoop, "writer-pending");
-        this.rateLimiter = new TokenBucket(config.rateBurst(), config.rateWindowMillis());
+        this.rateLimiter = new TokenBucket(config.rateBurst, config.rateWindowMillis);
     }
 
     // ------------------------------------------------------------------ lifecycle
@@ -155,7 +146,7 @@ public class ClientHandler implements Runnable {
             // The handshake deadline. An unauthenticated peer holds a pooled thread and a
             // file descriptor; ten seconds is generous for a machine and eternal for an
             // attacker opening connections in a loop.
-            applyReadTimeout(config.handshakeTimeoutMillis());
+            applyReadTimeout(config.handshakeTimeoutMillis);
 
             if (!handshake()) {
                 return;
@@ -166,7 +157,7 @@ public class ClientHandler implements Runnable {
             // case), but it cannot distinguish those from a user who is simply reading.
             // Hence 15 minutes rather than seconds. Phase 9's PING/PONG is what makes a
             // short idle timeout safe, because then silence is genuinely evidence.
-            applyReadTimeout(config.idleTimeoutMillis());
+            applyReadTimeout(config.idleTimeoutMillis);
 
             readLoop();
 
@@ -174,7 +165,7 @@ public class ClientHandler implements Runnable {
             // Only reachable post-handshake; the handshake catches its own.
             closeReason = "idle timeout";
             send(Message.error(ErrorCode.TIMEOUT,
-                    "no traffic for " + config.idleTimeoutMillis() + " ms"));
+                    "no traffic for " + config.idleTimeoutMillis + " ms"));
             ServerLog.warn("IDLE_TIMEOUT", who(), null);
 
         } catch (SocketException e) {
@@ -216,7 +207,7 @@ public class ClientHandler implements Runnable {
             // The deadline. Note the partial line already buffered is discarded — we are
             // disconnecting, so there is nothing to resynchronise with.
             return handshakeFailed(ErrorCode.TIMEOUT,
-                    "no HELLO within " + config.handshakeTimeoutMillis() + " ms",
+                    "no HELLO within " + config.handshakeTimeoutMillis + " ms",
                     "handshake deadline");
         } catch (ProtocolException e) {
             return handshakeFailed(e.code(), e.getMessage(), "over-length handshake");
@@ -271,7 +262,7 @@ public class ClientHandler implements Runnable {
         Thread.currentThread().setName("reader-" + requested);
         writerThread.setName("writer-" + requested);
 
-        send(Message.welcome(requested, config.serverName()));
+        send(Message.welcome(requested, config.serverName));
         registry.broadcast(Message.joined(requested), this);
         announcedJoin = true;
 
@@ -334,13 +325,12 @@ public class ClientHandler implements Runnable {
     }
 
     /**
-     * What to do with the line just read.
+     * What to do with the line just read. There are three answers, not two.
      *
-     * <p>Three outcomes, not two. An earlier version of this returned a {@code boolean}
-     * and it was wrong in a way that a passing test still missed: {@code false} meant
-     * "disconnect", so the drop case had to return {@code true} — which the caller read as
-     * "process this line". Every rate-limited message was answered with
-     * {@code ERROR RATE_LIMITED} <i>and then broadcast anyway</i>. See LEARNING-LOG.md, B4.
+     * <p>This used to be a {@code boolean} and it caused a real bug (LEARNING-LOG.md, B4):
+     * {@code false} meant "disconnect", so the "drop this line" case had nowhere to go and
+     * returned {@code true}, which the caller read as "go ahead and process it". Every
+     * rate-limited message got an ERROR <i>and was broadcast anyway</i>.
      */
     private enum RateDecision {
         /** Within the limit: parse and dispatch. */
@@ -364,12 +354,12 @@ public class ClientHandler implements Runnable {
         // sends 12 bytes, we send 70, and the limit has changed nothing about our egress.
         if (rateViolations == 1) {
             send(Message.error(ErrorCode.RATE_LIMITED,
-                    "slow down: at most " + config.rateBurst()
-                            + " messages per " + config.rateWindowMillis() + " ms"));
+                    "slow down: at most " + config.rateBurst
+                            + " messages per " + config.rateWindowMillis + " ms"));
             ServerLog.warn("RATE_LIMITED", who(), null);
         }
 
-        if (rateViolations >= config.rateViolationsBeforeKick()) {
+        if (rateViolations >= config.rateViolationsBeforeKick) {
             // Ignoring the limit long enough is itself the signal: a chat client backs off,
             // and something that does not is not a chat client.
             kicked = true;
@@ -400,13 +390,74 @@ public class ClientHandler implements Runnable {
                 return false;
             }
 
-            case PM -> throw new ProtocolException(ErrorCode.MALFORMED,
-                    "PM is not implemented yet (Phase 6)");
+            // Phase 6. Note there is no call to registry.broadcast() anywhere below —
+            // that is the privacy boundary, and it is a one-line thing to check.
+            case PM -> sendPrivateMessage(m.target(), m.body());
+
+            case REPLY -> {
+                String target = lastPmFrom;
+                if (target == null) {
+                    send(Message.error(ErrorCode.NO_SUCH_USER,
+                            "nobody has sent you a private message yet"));
+                } else {
+                    sendPrivateMessage(target, m.body());
+                }
+            }
 
             default -> throw new ProtocolException(ErrorCode.MALFORMED,
                     "unhandled verb: " + m.type());
         }
         return true;
+    }
+
+    // ------------------------------------------------------------------ private messages
+
+    /**
+     * Phase 6: deliver one private message from this client to {@code target}.
+     *
+     * <p>The receiver gets {@code WHISPER <fromNickname> <timestamp> <text>} and the sender
+     * gets {@code SENT <targetNickname> <timestamp> <text>} as a confirmation. Nobody else
+     * sees anything at all.
+     *
+     * <p><b>The race to think about.</b> Between {@code registry.find()} returning a handler
+     * and us putting the message on that handler's outbox, the target can disconnect. This
+     * is called a TOCTOU (time-of-check to time-of-use) window and you cannot close it — by
+     * the time you have the answer, it may already be out of date. So instead of trying to
+     * prevent it we make the failure honest: if the target is already closing, or its outbox
+     * refuses the message, we tell the sender {@code NO_SUCH_USER}, which is exactly what the
+     * target is about to become.
+     *
+     * <p><b>Messaging yourself works.</b> There is deliberately no special case for it: you
+     * get the WHISPER and the SENT confirmation, which is precisely what the routing rule
+     * says should happen. Handy for testing, and one less branch to get wrong.
+     */
+    private void sendPrivateMessage(String target, String text) {
+        ClientHandler receiver = registry.find(target).orElse(null);
+
+        if (receiver == null) {
+            send(Message.error(ErrorCode.NO_SUCH_USER, "no such user: " + target));
+            return;
+        }
+
+        // send() returns false when the receiver's outbox is full, i.e. they have stopped
+        // reading. Either way the message is not going to arrive, so say so rather than
+        // pretending it was delivered.
+        if (receiver.state == ConnectionState.CLOSING
+                || !receiver.send(Message.whisper(nickname, text))) {
+            send(Message.error(ErrorCode.NO_SUCH_USER, "no such user: " + target));
+            return;
+        }
+
+        // Remember us as the receiver's last whisperer, so their REPLY comes back here.
+        receiver.lastPmFrom = nickname;
+
+        // Confirm to the sender, using the receiver's real spelling of their nickname —
+        // "PM ALICE hi" should confirm as "SENT alice ...".
+        send(Message.sent(receiver.getNickname(), text));
+
+        // Log that a whisper happened, but never the text. A server admin does not need to
+        // read private messages to debug routing.
+        ServerLog.event("WHISPER", nickname, "-> " + receiver.getNickname());
     }
 
     // ------------------------------------------------------------------ output
@@ -450,20 +501,16 @@ public class ClientHandler implements Runnable {
     // ------------------------------------------------------------------ teardown
 
     /**
-     * End this connection from another thread, immediately, discarding queued output.
+     * End this connection from another thread, right now, throwing away queued output.
      *
-     * <p>Never blocks: closing the socket unblocks the reader, which then runs
-     * {@link #cleanup()} on its own thread. That matters because the usual caller is a
-     * <i>different</i> client's reader thread, part-way through a broadcast — the Phase 3
-     * rule that a broadcaster never waits on a consumer applies to disconnecting one just
-     * as much as to writing to one.
+     * <p>Never blocks. Closing the socket wakes the reader thread, which then runs
+     * {@link #cleanup()} itself. That matters because the caller is usually another
+     * client's thread in the middle of a broadcast, and it must not be made to wait.
      */
     public void kick(String reason) {
-        // Claim responsibility only if nothing else has already decided why this
-        // connection is ending. Without this guard, a shutdown sweep that arrives while a
-        // client is already tearing itself down would relabel an ordinary DISCONNECT as a
-        // KICKED — and "who ended it" is the one question the connection log exists to
-        // answer, so a log that guesses wrong under load is worse than no log.
+        // Only claim the reason if nothing else has already set one, otherwise a shutdown
+        // sweep arriving while a client is already leaving would relabel a normal
+        // DISCONNECT as a KICKED — and "who ended it" is what the log exists to answer.
         if (closeReason == null) {
             closeReason = reason;
             kicked = true;
@@ -557,10 +604,8 @@ public class ClientHandler implements Runnable {
         return connectedAt;
     }
 
-    /**
-     * Elapsed since accept, from the monotonic clock — the same reasoning as
-     * {@link TokenBucket}: a duration computed from wall time can come out negative.
-     */
+    /** How long this connection has been alive. Uses nanoTime for the same reason
+     *  {@link TokenBucket} does: a duration from the wall clock can come out negative. */
     private long elapsedMillis() {
         return (System.nanoTime() - connectedAtNanos) / 1_000_000L;
     }
@@ -576,15 +621,13 @@ public class ClientHandler implements Runnable {
 
     private void applyReadTimeout(int millis) {
         try {
-            // SO_TIMEOUT governs read() ONLY. connect() has its own timeout argument, and
-            // write() has none at all in blocking java.net — a write to a peer that has
-            // stopped reading blocks until the TCP send buffer drains or the connection
-            // dies. That asymmetry is exactly why output goes through an outbox instead of
-            // being written on the broadcaster's thread.
+            // setSoTimeout affects read() ONLY. connect() takes its own timeout argument,
+            // and write() has no timeout at all in normal java.net — writing to a client
+            // who has stopped reading blocks until their buffer drains or the connection
+            // dies. That is exactly why output goes through the outbox queue.
             socket.setSoTimeout(millis);
         } catch (SocketException e) {
-            // Non-fatal: without a timeout the connection simply behaves as it did in
-            // Phase 4. Worth a line, not worth dropping a working client.
+            // Not fatal: without the timeout the connection just behaves as it did before.
             ServerLog.warn("NO_SO_TIMEOUT", who(), e.getMessage());
         }
     }

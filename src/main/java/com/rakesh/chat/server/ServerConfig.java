@@ -5,112 +5,57 @@ import com.rakesh.chat.common.BoundedLineReader;
 import java.nio.file.Path;
 
 /**
- * Every tunable number in the server, in one place.
+ * All the settings the server uses, kept in one place instead of scattered as magic
+ * numbers around the code.
  *
- * <p>Phase 5 introduces this for a reason that has nothing to do with configurability:
- * <b>testability</b>. A 10-second handshake deadline is the right production value and a
- * catastrophic test value — a suite that waits 10 real seconds to prove one branch is a
- * suite nobody runs. Passing the deadline in lets {@code Phase5Test} use 250&nbsp;ms and
- * assert the same code path.
+ * <p>Usage: make one, change the fields you care about, hand it to {@link ChatServer}.
  *
- * <p>Phase 9 turns this into a properties file. Nothing else has to change when it does:
- * only {@link #defaults()} knows where the numbers come from.
+ * <pre>
+ *   ServerConfig config = ServerConfig.defaults();
+ *   config.port = 6000;
+ *   ChatServer server = new ChatServer(config);
+ * </pre>
+ *
+ * <p>The main reason this class exists is testing. A 10 second handshake deadline is
+ * sensible for real users but painful in a test, so the test just sets it to 300 ms.
  */
-public record ServerConfig(
-        int port,
-        int maxClients,
-        int maxLineBytes,
-        int outboxCapacity,
-        int handshakeTimeoutMillis,
-        int idleTimeoutMillis,
-        int rateBurst,
-        int rateWindowMillis,
-        int rateViolationsBeforeKick,
-        String serverName,
-        Path connectionLogPath) {
+public class ServerConfig {
 
-    public ServerConfig {
-        requirePositive(maxClients, "maxClients");
-        requirePositive(maxLineBytes, "maxLineBytes");
-        requirePositive(outboxCapacity, "outboxCapacity");
-        requirePositive(handshakeTimeoutMillis, "handshakeTimeoutMillis");
-        requirePositive(idleTimeoutMillis, "idleTimeoutMillis");
-        requirePositive(rateBurst, "rateBurst");
-        requirePositive(rateWindowMillis, "rateWindowMillis");
-        requirePositive(rateViolationsBeforeKick, "rateViolationsBeforeKick");
-        if (port < 0 || port > 65535) {
-            throw new IllegalArgumentException("port out of range: " + port);
-        }
-        if (serverName == null || serverName.isBlank() || serverName.indexOf(' ') >= 0) {
-            // WELCOME carries the server name as a non-terminal field, so a space in it
-            // would not survive the round trip. Fail at startup, not on the first client.
-            throw new IllegalArgumentException(
-                    "serverName must be non-blank and contain no space: " + serverName);
-        }
-    }
+    /** Port to listen on. 0 means "let the OS pick a free port" — used by the tests. */
+    public int port = 5000;
 
-    private static void requirePositive(int value, String what) {
-        if (value <= 0) {
-            throw new IllegalArgumentException(what + " must be positive, was " + value);
-        }
-    }
+    /** How many clients may be connected at the same time. */
+    public int maxClients = 100;
 
+    /** Longest line we will accept, in bytes (PROTOCOL.md section 1). */
+    public int maxLineBytes = BoundedLineReader.DEFAULT_MAX_BYTES;
+
+    /** How many messages we can hold for one client before we give up on them. */
+    public int outboxCapacity = 256;
+
+    /** A new client must send HELLO within this many milliseconds. */
+    public int handshakeTimeoutMillis = 10_000;
+
+    /** After HELLO, drop a client that sends nothing at all for this long (15 minutes). */
+    public int idleTimeoutMillis = 900_000;
+
+    /** How many messages a client may send in one quick burst. */
+    public int rateBurst = 20;
+
+    /** How long the burst allowance takes to fill back up. */
+    public int rateWindowMillis = 10_000;
+
+    /** How many refused messages in a row before we disconnect the client. */
+    public int rateViolationsBeforeKick = 20;
+
+    /** Name the server sends in WELCOME. Must not contain a space. */
+    public String serverName = "rakesh-chat";
+
+    /** Where the connection log file is written. */
+    public Path connectionLogPath = Path.of("logs", "connections.log");
+
+    /** Just a friendlier name for {@code new ServerConfig()}. */
     public static ServerConfig defaults() {
-        return new ServerConfig(
-                5000,                                   // port
-                100,                                    // maxClients
-                BoundedLineReader.DEFAULT_MAX_BYTES,    // maxLineBytes  (PROTOCOL.md §1)
-                256,                                    // outboxCapacity (Phase 3 decision)
-                10_000,                                 // handshakeTimeoutMillis (Phase 5)
-                900_000,                                // idleTimeoutMillis — 15 min, see below
-                20,                                     // rateBurst    — 20 lines...
-                10_000,                                 // rateWindowMillis — ...per 10 s
-                20,                                     // rateViolationsBeforeKick
-                "rakesh-chat",
-                Path.of("logs", "connections.log"));
-    }
-
-    // --- withers: only the knobs the tests actually need to move -------------
-
-    public ServerConfig withPort(int newPort) {
-        return new ServerConfig(newPort, maxClients, maxLineBytes, outboxCapacity,
-                handshakeTimeoutMillis, idleTimeoutMillis, rateBurst, rateWindowMillis,
-                rateViolationsBeforeKick, serverName, connectionLogPath);
-    }
-
-    public ServerConfig withMaxClients(int max) {
-        return new ServerConfig(port, max, maxLineBytes, outboxCapacity,
-                handshakeTimeoutMillis, idleTimeoutMillis, rateBurst, rateWindowMillis,
-                rateViolationsBeforeKick, serverName, connectionLogPath);
-    }
-
-    public ServerConfig withHandshakeTimeoutMillis(int millis) {
-        return new ServerConfig(port, maxClients, maxLineBytes, outboxCapacity,
-                millis, idleTimeoutMillis, rateBurst, rateWindowMillis,
-                rateViolationsBeforeKick, serverName, connectionLogPath);
-    }
-
-    public ServerConfig withIdleTimeoutMillis(int millis) {
-        return new ServerConfig(port, maxClients, maxLineBytes, outboxCapacity,
-                handshakeTimeoutMillis, millis, rateBurst, rateWindowMillis,
-                rateViolationsBeforeKick, serverName, connectionLogPath);
-    }
-
-    public ServerConfig withRateLimit(int burst, int windowMillis, int violationsBeforeKick) {
-        return new ServerConfig(port, maxClients, maxLineBytes, outboxCapacity,
-                handshakeTimeoutMillis, idleTimeoutMillis, burst, windowMillis,
-                violationsBeforeKick, serverName, connectionLogPath);
-    }
-
-    public ServerConfig withOutboxCapacity(int capacity) {
-        return new ServerConfig(port, maxClients, maxLineBytes, capacity,
-                handshakeTimeoutMillis, idleTimeoutMillis, rateBurst, rateWindowMillis,
-                rateViolationsBeforeKick, serverName, connectionLogPath);
-    }
-
-    public ServerConfig withConnectionLogPath(Path path) {
-        return new ServerConfig(port, maxClients, maxLineBytes, outboxCapacity,
-                handshakeTimeoutMillis, idleTimeoutMillis, rateBurst, rateWindowMillis,
-                rateViolationsBeforeKick, serverName, path);
+        return new ServerConfig();
     }
 }

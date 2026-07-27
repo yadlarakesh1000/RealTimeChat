@@ -50,6 +50,13 @@ public record Message(MessageType type, String sender, String target,
                 requireNonEmptyText(body, "PM.body");
                 requireAbsent(timestamp, "PM.timestamp");
             }
+            // Phase 6. REPLY carries only text; the server remembers who to send it to.
+            case REPLY -> {
+                requireAbsent(sender, "REPLY.sender");
+                requireAbsent(target, "REPLY.target");
+                requireNonEmptyText(body, "REPLY.body");
+                requireAbsent(timestamp, "REPLY.timestamp");
+            }
             case LIST, QUIT -> {
                 requireAbsent(sender, type + ".sender");
                 requireAbsent(target, type + ".target");
@@ -86,6 +93,15 @@ public record Message(MessageType type, String sender, String target,
                 requireNonEmptyText(body, type + ".body");
                 if (timestamp == null) {
                     throw new IllegalArgumentException(type + ".timestamp must not be null");
+                }
+            }
+            // Phase 6. The one server verb that uses target: it names who you sent to.
+            case SENT -> {
+                requireAbsent(sender, "SENT.sender");
+                requireNickname(target, "SENT.target");
+                requireNonEmptyText(body, "SENT.body");
+                if (timestamp == null) {
+                    throw new IllegalArgumentException("SENT.timestamp must not be null");
                 }
             }
             case JOINED, LEFT -> {
@@ -179,12 +195,14 @@ public record Message(MessageType type, String sender, String target,
             case HELLO   -> "HELLO " + VERSION + " " + sender;
             case MSG     -> "MSG " + body;
             case PM      -> "PM " + target + " " + body;
+            case REPLY   -> "REPLY " + body;
             case LIST    -> "LIST";
             case QUIT    -> "QUIT";
             case WELCOME -> "WELCOME " + sender + " " + body;
             case ERROR   -> "ERROR " + target + " " + body;
             case CHAT    -> "CHAT " + sender + " " + timestamp + " " + body;
             case WHISPER -> "WHISPER " + sender + " " + timestamp + " " + body;
+            case SENT    -> "SENT " + target + " " + timestamp + " " + body;
             case JOINED  -> "JOINED " + sender;
             case LEFT    -> "LEFT " + sender;
            
@@ -230,12 +248,14 @@ public record Message(MessageType type, String sender, String target,
             case HELLO   -> parseHello(line);
             case MSG     -> new Message(MessageType.MSG, null, null, requireBody(line, 2, "MSG"), null);
             case PM      -> parsePm(line);
+            case REPLY   -> new Message(MessageType.REPLY, null, null, requireBody(line, 2, "REPLY"), null);
             case LIST    -> new Message(MessageType.LIST, null, null, null, null); // must-ignore trailing
             case QUIT    -> new Message(MessageType.QUIT, null, null, null, null); // must-ignore trailing
             case WELCOME -> parseWelcome(line);
             case ERROR   -> parseError(line);
             case CHAT    -> parseTimestamped(line, MessageType.CHAT);
             case WHISPER -> parseTimestamped(line, MessageType.WHISPER);
+            case SENT    -> parseSent(line);
             case JOINED  -> parseNickOnly(line, MessageType.JOINED);
             case LEFT    -> parseNickOnly(line, MessageType.LEFT);
             case USERS   -> parseUsers(line);
@@ -318,6 +338,23 @@ public record Message(MessageType type, String sender, String target,
         return new Message(type, checkedNickname(parts[1], type + " sender"), null, parts[3], ts);
     }
 
+    /** Phase 6: {@code SENT <target> <timestamp> <text>} — same shape as CHAT/WHISPER. */
+    private static Message parseSent(String line) throws ProtocolException {
+        String[] parts = line.split(" ", 4);
+        if (parts.length < 4 || parts[3].isEmpty()) {
+            throw new ProtocolException(ErrorCode.MALFORMED,
+                    "SENT requires a target, a timestamp and a non-empty body");
+        }
+        Instant ts;
+        try {
+            ts = Instant.parse(parts[2]);
+        } catch (DateTimeParseException e) {
+            throw new ProtocolException(ErrorCode.MALFORMED, "invalid timestamp: " + parts[2]);
+        }
+        return new Message(MessageType.SENT, null, checkedNickname(parts[1], "SENT target"),
+                parts[3], ts);
+    }
+
     private static Message parseNickOnly(String line, MessageType type) throws ProtocolException {
         String[] parts = line.split(" ", 2);
         if (parts.length < 2) {
@@ -383,6 +420,11 @@ public record Message(MessageType type, String sender, String target,
         return new Message(MessageType.PM, null, target, body, null);
     }
 
+    /** Phase 6: reply to whoever whispered to you last. */
+    public static Message reply(String body) {
+        return new Message(MessageType.REPLY, null, null, body, null);
+    }
+
     public static Message list() {
         return new Message(MessageType.LIST, null, null, null, null);
     }
@@ -403,8 +445,14 @@ public record Message(MessageType type, String sender, String target,
         return new Message(MessageType.CHAT, sender, null, body, timestamp);
     }
 
+    /** Phase 6: what the receiver of a private message sees. */
     public static Message whisper(String sender, String body) {
         return new Message(MessageType.WHISPER, sender, null, body, Instant.now());
+    }
+
+    /** Phase 6: what the sender of a private message sees, as confirmation. */
+    public static Message sent(String target, String body) {
+        return new Message(MessageType.SENT, null, target, body, Instant.now());
     }
 
     public static Message joined(String nickname) {

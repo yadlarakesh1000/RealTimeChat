@@ -115,6 +115,25 @@ final class RawClient implements Closeable {
         assertNull(readRaw(), "expected the server to close the connection");
     }
 
+    /**
+     * Waits {@code millis} and fails if anything arrives. This is how Phase 6 proves the
+     * privacy boundary: we check the third client's <b>raw stream</b>, not a UI.
+     */
+    void expectNothing(int millis) throws IOException {
+        int previousTimeout = socket.getSoTimeout();
+        socket.setSoTimeout(millis);
+        try {
+            String line = in.readLine();
+            fail("expected nothing to arrive, but got: " + line);
+        } catch (java.net.SocketTimeoutException expected) {
+            // Good — silence is what we wanted.
+        } catch (ProtocolException e) {
+            fail("expected nothing to arrive, but got an unparseable line: " + e.getMessage());
+        } finally {
+            socket.setSoTimeout(previousTimeout);
+        }
+    }
+
     RawClient helloAs(String nick) throws IOException, ProtocolException {
         send("HELLO 1 " + nick);
         assertEquals(MessageType.WELCOME, read().type());
