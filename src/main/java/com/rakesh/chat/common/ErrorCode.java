@@ -29,5 +29,19 @@ public enum ErrorCode {
      * harmless here because every {@code TIMEOUT} is immediately followed by a close.
      * <b>Renaming or reordering</b> a constant would be breaking; adding one is not.
      */
-    TIMEOUT
+    TIMEOUT,
+
+    /**
+     * Phase 8: the body arrived but would not decrypt.
+     *
+     * <p>Three different mistakes produce this and the server cannot tell them apart —
+     * which is the correct behaviour, not a shortcoming: someone altered the bytes in
+     * transit, the peer is using a different passphrase, or the peer sent plain text to an
+     * encrypted server. All three mean "this body is not what it claims to be", and the
+     * answer to all three is the same: refuse the message, keep the connection.
+     *
+     * <p>Added in Phase 8, and additive for the same reason {@code TIMEOUT} was — see
+     * PROTOCOL.md section 3.1.
+     */
+    BAD_PAYLOAD
 }

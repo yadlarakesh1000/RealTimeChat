@@ -14,6 +14,7 @@ import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
+import javafx.scene.control.PasswordField;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
@@ -53,6 +54,9 @@ public class ChatWindow extends Application {
     private TextField portField;
     private TextField nickField;
     private TextField inputField;
+
+    /** Phase 8. A PasswordField, not a TextField, so it shows dots instead of the secret. */
+    private PasswordField passField;
 
     private Button connectButton;
     private Button disconnectButton;
@@ -107,6 +111,11 @@ public class ChatWindow extends Application {
         nickField.setPromptText("nickname");
         nickField.setPrefColumnCount(10);
 
+        // Phase 8. Leave it empty for plain text; type the server's passphrase to encrypt.
+        passField = new PasswordField();
+        passField.setPromptText("passphrase");
+        passField.setPrefColumnCount(10);
+
         connectButton = new Button("Connect");
         connectButton.setOnAction(event -> doConnect());
 
@@ -120,6 +129,7 @@ public class ChatWindow extends Application {
                 new Label("Host"), hostField,
                 new Label("Port"), portField,
                 new Label("Name"), nickField,
+                new Label("Key"), passField,
                 connectButton, disconnectButton, statusLabel);
         bar.setAlignment(Pos.CENTER_LEFT);
         bar.getStyleClass().add("top-bar");
@@ -169,6 +179,9 @@ public class ChatWindow extends Application {
     private void doConnect() {
         String host = hostField.getText().trim();
         String nickname = nickField.getText().trim();
+        // Not trimmed: a space is a perfectly good character in a passphrase, and silently
+        // removing one would produce a different key and a very confusing bug.
+        String passphrase = passField.getText();
 
         int port;
         try {
@@ -186,10 +199,11 @@ public class ChatWindow extends Application {
         setStatus("connecting...");
 
         // connect() waits for the network, so it must not run here - this method is on the
-        // FX thread, and anything slow on the FX thread freezes the whole window.
+        // FX thread, and anything slow on the FX thread freezes the whole window. Phase 8
+        // adds a second slow thing to keep off this thread: deriving the key.
         Thread connector = new Thread(() -> {
             try {
-                client.connect(host, port, nickname);
+                client.connect(host, port, nickname, passphrase);
                 Platform.runLater(() -> showConnected(true));
             } catch (IOException | RuntimeException e) {
                 Platform.runLater(() -> {
@@ -223,7 +237,8 @@ public class ChatWindow extends Application {
 
                 case WELCOME -> {
                     messages.add(message);
-                    setStatus("connected as " + message.sender());
+                    setStatus("connected as " + message.sender()
+                            + (client.isEncrypted() ? " (encrypted)" : " (plain text)"));
                     client.send(Message.list()); // ask who else is here
                 }
 
@@ -328,6 +343,7 @@ public class ChatWindow extends Application {
         hostField.setDisable(online);
         portField.setDisable(online);
         nickField.setDisable(online);
+        passField.setDisable(online);
         inputField.setDisable(!online);
         sendButton.setDisable(!online);
 

@@ -1,5 +1,7 @@
 package com.rakesh.chat.server;
 
+import com.rakesh.chat.common.crypto.MessageCrypto;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -25,6 +27,14 @@ public class ChatServer {
     private final ExecutorService pool;
     private final ClientRegistry registry;
     private final ConnectionLog connectionLog;
+
+    /**
+     * Phase 8. Built once here, not once per connection: turning the passphrase into a key
+     * runs PBKDF2 100,000 times and takes about a tenth of a second, which is exactly what
+     * you want when someone is guessing passwords and exactly what you do not want on the
+     * accept path. Every handler shares this one object.
+     */
+    private final MessageCrypto crypto;
 
     /**
      * Every live connection, including ones that have not said HELLO yet.
@@ -71,6 +81,12 @@ public class ChatServer {
         this.pool = Executors.newFixedThreadPool(config.maxClients);
         this.registry = new ClientRegistry();
         this.connectionLog = new ConnectionLog(config.connectionLogPath);
+        this.crypto = MessageCrypto.forPassphrase(config.passphrase);
+    }
+
+    /** Phase 8. Shared by every {@link ClientHandler}; {@code OFF} when no passphrase is set. */
+    public MessageCrypto getCrypto() {
+        return crypto;
     }
 
     public ClientRegistry getRegistry() {
@@ -106,6 +122,9 @@ public class ChatServer {
         // getPort(), not config.port: they differ whenever port 0 was requested.
         System.out.println("Server started on port " + getPort());
         System.out.println("Connection log: " + config.connectionLogPath.toAbsolutePath());
+        System.out.println(crypto.isOn()
+                ? "Encryption:     ON (AES-GCM on message bodies)"
+                : "Encryption:     OFF - start with -Dchat.passphrase=... to turn it on");
         System.out.println("Waiting for clients...");
         System.out.println("====================================");
 
@@ -218,7 +237,14 @@ public class ChatServer {
     }
 
     public static void main(String[] args) throws Exception {
-        ChatServer server = new ChatServer();
+        ServerConfig config = ServerConfig.defaults();
+
+        // Phase 8. Two ways in, because a system property is easy from Maven
+        // (-Dchat.passphrase=...) and an environment variable is what you would really use,
+        // since anyone running `ps` can read a command line but not another user's env.
+        config.passphrase = System.getProperty("chat.passphrase", System.getenv("CHAT_PASSPHRASE"));
+
+        ChatServer server = new ChatServer(config);
         Runtime.getRuntime().addShutdownHook(new Thread(server::shutdown, "shutdown-hook"));
         server.start();
     }

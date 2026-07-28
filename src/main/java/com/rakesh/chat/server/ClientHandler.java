@@ -5,6 +5,7 @@ import com.rakesh.chat.common.ErrorCode;
 import com.rakesh.chat.common.Message;
 import com.rakesh.chat.common.MessageType;
 import com.rakesh.chat.common.ProtocolException;
+import com.rakesh.chat.common.crypto.MessageCrypto;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -61,6 +62,9 @@ public class ClientHandler implements Runnable {
     private final ServerConfig config;
     private final ConnectionLog connectionLog;
 
+    /** Phase 8. Shared with every other handler; {@code OFF} when no passphrase is set. */
+    private final MessageCrypto crypto;
+
     private final BoundedLineReader in;
     private final PrintWriter out;
 
@@ -107,6 +111,7 @@ public class ClientHandler implements Runnable {
         this.registry = server.getRegistry();
         this.config = server.getConfig();
         this.connectionLog = server.getConnectionLog();
+        this.crypto = server.getCrypto();
 
         this.remoteAddress = (socket.getRemoteSocketAddress() == null)
                 ? "-" : socket.getRemoteSocketAddress().toString();
@@ -314,11 +319,19 @@ public class ClientHandler implements Runnable {
             }
 
             try {
-                if (!dispatch(Message.parse(line))) {
+                // Phase 8: parse first, then decrypt. The verb and the target have to stay
+                // readable for routing, so only the body is scrambled and only the body is
+                // unscrambled. crypto.decrypt is a no-op when no passphrase is configured.
+                if (!dispatch(crypto.decrypt(Message.parse(line)))) {
                     return; // QUIT
                 }
             } catch (ProtocolException e) {
                 // A bad message kills the message, not the connection.
+                if (e.code() == ErrorCode.BAD_PAYLOAD) {
+                    // Worth a log line: it is either an attack or a misconfigured client,
+                    // and both are things an admin wants to see. Never log the payload.
+                    ServerLog.warn("BAD_PAYLOAD", who(), e.getMessage());
+                }
                 send(Message.error(e.code(), e.getMessage()));
             }
         }
@@ -462,13 +475,19 @@ public class ClientHandler implements Runnable {
 
     // ------------------------------------------------------------------ output
 
+    /**
+     * Queues one message for this client.
+     *
+     * <p>Non-blocking. {@code false} means the outbox is full — the caller decides what that
+     * means.
+     *
+     * <p><b>Phase 8: this is the only place outbound text gets encrypted</b>, the mirror of
+     * the one decrypt call in {@link #readLoop()}. Every line the server sends to anybody
+     * goes through here, including broadcasts, so there is exactly one line to check when
+     * you ask "is everything encrypted?".
+     */
     public boolean send(Message message) {
-        return sendSerialized(message.serialize());
-    }
-
-    /** Non-blocking. {@code false} means the outbox is full — the caller decides what that means. */
-    boolean sendSerialized(String wireLine) {
-        return outbox.offer(wireLine);
+        return outbox.offer(crypto.encrypt(message).serialize());
     }
 
     private void writerLoop() {

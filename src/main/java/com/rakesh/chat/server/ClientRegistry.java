@@ -61,8 +61,13 @@ public class ClientRegistry {
      * {@code ClientHandler.sendPrivateMessage}. That is the privacy boundary for Phase 6:
      * if a whisper cannot reach this method, it cannot leak to the room.
      *
-     * <p>The line is turned into text once, not once per client, because the bytes are the
-     * same for everybody.
+     * <p><b>Phase 8 changed this method.</b> It used to call {@code message.serialize()}
+     * once and hand the same text to everybody, which was cheaper. Now it calls each
+     * client's own {@code send()}, because that is where encryption happens — pre-building
+     * the line here would have quietly shipped the room's messages in clear text. The cost
+     * is one encryption per recipient instead of one per message; the benefit is that
+     * "everything out goes through {@code ClientHandler.send}" stays true with no
+     * exceptions, and each recipient's copy gets its own IV.
      *
      * <p>If a client's outbox is full we {@link ClientHandler#kick} them rather than
      * calling {@code cleanup()}. {@code cleanup()} waits up to a second for that client's
@@ -70,8 +75,6 @@ public class ClientRegistry {
      * this loop — so removing one slow client would stall the broadcast for everyone else.
      */
     public void broadcast(Message message, ClientHandler except) {
-        String wireLine = message.serialize();
-
         // ConcurrentHashMap's iterator never throws ConcurrentModificationException, and it
         // may or may not include someone who joins while we are looping. That is fine: a
         // client who joins halfway through just misses a message sent before they arrived.
@@ -79,7 +82,7 @@ public class ClientRegistry {
             if (client == except) {
                 continue;
             }
-            if (!client.sendSerialized(wireLine)) {
+            if (!client.send(message)) {
                 ServerLog.warn("OUTBOX_FULL", client.getNickname(),
                         "disconnecting slow consumer");
                 client.kick("outbox overflow");

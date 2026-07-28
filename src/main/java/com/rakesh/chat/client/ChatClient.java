@@ -3,6 +3,7 @@ package com.rakesh.chat.client;
 import com.rakesh.chat.common.BoundedLineReader;
 import com.rakesh.chat.common.Message;
 import com.rakesh.chat.common.ProtocolException;
+import com.rakesh.chat.common.crypto.MessageCrypto;
 
 import java.io.IOException;
 import java.io.OutputStreamWriter;
@@ -35,6 +36,9 @@ public class ChatClient {
     private Thread readerThread;
     private String nickname;
 
+    /** Phase 8. Set by {@link #connect}; {@code OFF} until then and when no passphrase is given. */
+    private MessageCrypto crypto = MessageCrypto.OFF;
+
     /** Read by the UI thread, written by the reader thread, hence volatile. */
     private volatile boolean connected = false;
 
@@ -52,16 +56,31 @@ public class ChatClient {
         this.onClosed = (onClosed == null) ? reason -> { } : onClosed;
     }
 
+    /** Connects with no encryption, the way Phases 1-7 did. */
+    public void connect(String host, int port, String nickname) throws IOException {
+        connect(host, port, nickname, null);
+    }
+
     /**
      * Connects, starts the reader thread, and sends the HELLO handshake.
      *
      * <p>This blocks until the TCP connection is made, so never call it from the JavaFX
-     * thread — the window would freeze while it waited.
+     * thread — the window would freeze while it waited. Phase 8 gives it a second reason:
+     * turning the passphrase into a key deliberately takes about a tenth of a second.
+     *
+     * @param passphrase Phase 8. null or blank means plain text. Must match the server's
+     *                   passphrase exactly, or every message will come back
+     *                   {@code ERROR BAD_PAYLOAD}.
      */
-    public void connect(String host, int port, String nickname) throws IOException {
+    public void connect(String host, int port, String nickname, String passphrase)
+            throws IOException {
         if (connected) {
             throw new IllegalStateException("already connected");
         }
+
+        // Done before the socket is opened: if the passphrase is unusable we would rather
+        // fail without having bothered the server.
+        this.crypto = MessageCrypto.forPassphrase(passphrase);
 
         // new Socket() then connect(), rather than new Socket(host, port), because only
         // this form lets us put a timeout on the connect attempt.
@@ -90,12 +109,20 @@ public class ChatClient {
     /**
      * Writes one message. Synchronized because the send button and the Enter key can both
      * land here, and two threads sharing a PrintWriter is how you get interleaved lines.
+     *
+     * <p>Phase 8: the one place outbound bodies get encrypted, mirroring the one decrypt
+     * call in {@link #readLoop}.
      */
     public synchronized void send(Message message) {
         if (!connected || out == null) {
             return;
         }
-        out.println(message.serialize());
+        out.println(crypto.encrypt(message).serialize());
+    }
+
+    /** Phase 8. True when a passphrase was supplied to {@link #connect}. */
+    public boolean isEncrypted() {
+        return crypto.isOn();
     }
 
     /** Says QUIT politely, then closes. Safe to call twice. */
@@ -126,11 +153,14 @@ public class ChatClient {
                     break; // clean end of stream
                 }
                 try {
-                    onMessage.accept(Message.parse(line));
+                    // Phase 8: decrypt after parsing, exactly as the server does. A body we
+                    // cannot decrypt lands here as a ProtocolException and is skipped like
+                    // any other unreadable line.
+                    onMessage.accept(crypto.decrypt(Message.parse(line)));
                 } catch (ProtocolException e) {
                     // The server said something this version does not understand. Skip the
                     // line rather than dropping the connection - PROTOCOL.md section 2.6.
-                    System.err.println("ignoring unreadable line: " + line);
+                    System.err.println("ignoring unreadable line: " + e.getMessage());
                 }
             }
         } catch (ProtocolException e) {

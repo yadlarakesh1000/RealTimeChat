@@ -54,6 +54,15 @@ public class ServerConfig {
     /** Where the connection log file is written. */
     public Path connectionLogPath = Path.of("logs", "connections.log");
 
+    /**
+     * Phase 8. The shared secret that message bodies are encrypted with.
+     *
+     * <p>{@code null} or blank means <b>no encryption</b>, which is the default so that
+     * telnet and every test written before Phase 8 still work. Every client must be given
+     * the same passphrase or their messages will not decrypt.
+     */
+    public String passphrase = null;
+
     /** Just a friendlier name for {@code new ServerConfig()}. */
     public static ServerConfig defaults() {
         return new ServerConfig();
