@@ -1,0 +1,96 @@
+/*
+ * Styling for the chat window.
+ *
+ * This file exists so ChatWindow.java contains no setStyle(...) calls. Colours and spacing
+ * live here, layout and behaviour live in the Java file. Change a colour without touching
+ * a line of Java, which is the whole reason a stylesheet is worth having.
+ *
+ * JavaFX CSS is close to web CSS but the properties start with -fx-.
+ */
+
+.chat-root {
+    -fx-font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+    -fx-font-size: 13px;
+}
+
+/* ---------- the connection bar at the top ---------- */
+
+.top-bar {
+    -fx-padding: 10px;
+    -fx-background-color: #eef1f5;
+    -fx-border-color: transparent transparent #d0d5dd transparent;
+    -fx-border-width: 0 0 1px 0;
+}
+
+.status-label {
+    -fx-font-size: 12px;
+    -fx-padding: 0 0 0 6px;
+}
+
+.status-online {
+    -fx-text-fill: #1a7f37;
+}
+
+.status-offline {
+    -fx-text-fill: #9a6700;
+}
+
+/* ---------- the conversation ---------- */
+
+.message-list {
+    -fx-background-color: white;
+}
+
+.message-list .list-cell {
+    -fx-padding: 5px 12px;
+    -fx-background-color: transparent;
+}
+
+/* A room message you typed yourself. */
+.own-message {
+    -fx-text-fill: #0b5cad;
+    -fx-font-weight: bold;
+}
+
+/* A room message from somebody else. */
+.chat-message {
+    -fx-text-fill: #1f2328;
+}
+
+/* A private message someone sent to you. */
+.whisper-message {
+    -fx-text-fill: #8250df;
+    -fx-font-weight: bold;
+}
+
+/* The server's confirmation that your private message went out. */
+.sent-message {
+    -fx-text-fill: #8250df;
+}
+
+/* Joins, leaves, welcomes and errors. */
+.system-message {
+    -fx-text-fill: #6e7781;
+    -fx-font-style: italic;
+}
+
+/* ---------- who is online ---------- */
+
+.user-list {
+    -fx-background-color: #fafbfc;
+    -fx-border-color: transparent transparent transparent #d0d5dd;
+    -fx-border-width: 0 0 0 1px;
+}
+
+.user-list .list-cell {
+    -fx-padding: 6px 10px;
+}
+
+/* ---------- the type-here box ---------- */
+
+.input-bar {
+    -fx-padding: 10px;
+    -fx-background-color: #eef1f5;
+    -fx-border-color: #d0d5dd transparent transparent transparent;
+    -fx-border-width: 1px 0 0 0;
+}

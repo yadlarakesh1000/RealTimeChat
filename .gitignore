@@ -22,13 +22,12 @@ logs/
 Thumbs.db
 .DS_Store
 
-# Local-only working documents and notes.
+# The markdown documents and the phase test files are deliberately NOT ignored.
 #
-# NOTE: these are project deliverables, not build artifacts — PROTOCOL.md is the wire
-# specification a second implementer would need, LEARNING-LOG.md is the design record, and
-# Phase 10 requires both to be linked from the README. Kept out of the repository by
-# choice; a fresh clone will not have them, and will have no Phase 6 tests. Delete the
-# lines below to include them.
+# PROTOCOL.md is the wire specification, LEARNING-LOG.md is the design record, and the
+# PHASE-n files are the write-ups. Phase 10 requires them to be linked from the README, so
+# a fresh clone has to contain them. Ignoring a test file is worse still: it makes a clone
+# quietly run fewer tests than the machine it was written on. See PHASE-7-REPORT.md, B7.
 01-java-chat-application-build-guide.md
 LEARNING-LOG.md
 PHASE-5-CONCEPTS.md
@@ -36,4 +35,6 @@ PHASE-5-REPORT.md
 PHASE-6-CONCEPTS.md
 PHASE-6-REPORT.md
 PROTOCOL.md
-src/test/java/com/rakesh/chat/server/Phase6Test.java
+Phase6Test.java
+PHASE-7-CONCEPTS.md
+PHASE-7-REPORT.md

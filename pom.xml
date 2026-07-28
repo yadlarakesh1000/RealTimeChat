@@ -16,6 +16,8 @@
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <junit.version>5.10.2</junit.version>
+    <!-- The 17.x line of JavaFX is the one that matches a Java 17 JDK. -->
+    <javafx.version>17.0.20</javafx.version>
   </properties>
 
   <dependencies>
@@ -24,6 +26,15 @@
       <artifactId>junit-jupiter</artifactId>
       <version>${junit.version}</version>
       <scope>test</scope>
+    </dependency>
+
+    <!-- Phase 7. JavaFX left the JDK in Java 11, so it is an ordinary dependency now.
+         javafx-controls pulls in javafx-base and javafx-graphics with it, and Maven picks
+         the right windows/mac/linux build automatically. -->
+    <dependency>
+      <groupId>org.openjfx</groupId>
+      <artifactId>javafx-controls</artifactId>
+      <version>${javafx.version}</version>
     </dependency>
   </dependencies>
 
@@ -45,8 +56,19 @@
           <mainClass>com.rakesh.chat.server.ChatServer</mainClass>
         </configuration>
       </plugin>
+
+      <!-- Phase 7. `mvn javafx:run` starts the GUI client. The plugin's job is to put the
+           JavaFX jars on the *module* path, which is what stops the classic
+           "JavaFX runtime components are missing" error. -->
+      <plugin>
+        <groupId>org.openjfx</groupId>
+        <artifactId>javafx-maven-plugin</artifactId>
+        <version>0.0.8</version>
+        <configuration>
+          <mainClass>com.rakesh.chat.client.Main</mainClass>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
 
-  <!-- JavaFX is deliberately NOT configured yet. See Phase 7 of the build guide. -->
 </project>
