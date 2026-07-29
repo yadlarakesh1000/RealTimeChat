@@ -43,5 +43,21 @@ public enum ErrorCode {
      * <p>Added in Phase 8, and additive for the same reason {@code TIMEOUT} was — see
      * PROTOCOL.md section 3.1.
      */
-    BAD_PAYLOAD
+    BAD_PAYLOAD,
+
+    /**
+     * Phase 9: the server is shutting down on purpose, and this connection is about to be
+     * closed because of that and not because anything went wrong.
+     *
+     * <p>Without it, a planned restart looks exactly like a crash: the socket just closes
+     * and the client says "connection lost". One line before the close turns a mystery into
+     * a notice.
+     *
+     * <p>It is an {@code ERROR} line because that is the only channel this protocol has for
+     * "here is a code, here is a sentence for the user". The build guide suggests
+     * {@code LEFT <nick> server-shutdown} instead, but our {@code LEFT} grammar is
+     * {@code LEFT <nickname>} with no reason field (PROTOCOL.md §2.1), and adding a field
+     * to an existing verb would be a <b>breaking</b> change. Adding a code is not.
+     */
+    SERVER_SHUTDOWN
 }

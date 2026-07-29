@@ -2,6 +2,7 @@ package com.rakesh.chat.client;
 
 import com.rakesh.chat.common.BoundedLineReader;
 import com.rakesh.chat.common.Message;
+import com.rakesh.chat.common.MessageType;
 import com.rakesh.chat.common.ProtocolException;
 import com.rakesh.chat.common.crypto.MessageCrypto;
 
@@ -156,7 +157,18 @@ public class ChatClient {
                     // Phase 8: decrypt after parsing, exactly as the server does. A body we
                     // cannot decrypt lands here as a ProtocolException and is skipped like
                     // any other unreadable line.
-                    onMessage.accept(crypto.decrypt(Message.parse(line)));
+                    Message incoming = crypto.decrypt(Message.parse(line));
+
+                    // Phase 9. Answer the heartbeat here and stop. It is housekeeping
+                    // between the two sockets, not something a user typed, so the window
+                    // never hears about it and no "ping" ever appears in the conversation.
+                    // Answering from this thread is safe because send() is synchronized.
+                    if (incoming.type() == MessageType.PING) {
+                        send(Message.pong());
+                        continue;
+                    }
+
+                    onMessage.accept(incoming);
                 } catch (ProtocolException e) {
                     // The server said something this version does not understand. Skip the
                     // line rather than dropping the connection - PROTOCOL.md section 2.6.

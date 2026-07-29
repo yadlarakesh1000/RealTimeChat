@@ -3,7 +3,6 @@ package com.rakesh.chat.server;
 import com.rakesh.chat.common.Message;
 
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -92,8 +91,5 @@ public class ClientRegistry {
 
     public int size() {
         return clientsByNickname.size();
-    }
-    public Collection<ClientHandler> all() {
-        return Collections.unmodifiableCollection(clientsByNickname.values());
     }
 }

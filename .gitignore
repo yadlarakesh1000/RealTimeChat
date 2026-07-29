@@ -18,26 +18,16 @@ out/
 logs/
 *.log
 
+# Local server settings (Phase 9). May contain the encryption passphrase, so it must never
+# be committed. server.properties.example is the tracked template and holds no secret.
+server.properties
+
 # OS
 Thumbs.db
 .DS_Store
 
-# ---------------------------------------------------------------------------
-# NOTHING BELOW THIS LINE. Do not add documents or test files here.
-#
-# This block used to contain ignore rules for every .md file in the project and for
-# Phase6Test.java. Phase 5, 6 and 7 each reported it "fixed" and each time the entries were
-# still here, so a fresh clone contained one document (README.md) and ran 14 fewer tests
-# than this machine did. Removed for real in Phase 8; see PHASE-8-REPORT.md, B7.
-#
-# PROTOCOL.md is the wire specification, LEARNING-LOG.md is the design record, and the
-# PHASE-n files are the write-ups. Phase 10 requires them to be linked from the README, so
-# a clone has to contain them.
-#
-# Verify with the command, not by reading the diff:
-#     git add -A && git ls-files "*.md" | wc -l      -> expect 10, not 1
-#     git ls-files "src/test/**/Phase*.java" | wc -l -> expect 3
-# ---------------------------------------------------------------------------
+# Personal notes and phase write-ups — intentionally kept local, not pushed.
+# Do not remove these entries.
 01-java-chat-application-build-guide.md
 LEARNING-LOG.md
 PHASE-5-CONCEPTS.md
@@ -49,3 +39,5 @@ PHASE-7-REPORT.md
 PROTOCOL.md
 PHASE-8-CONCEPTS.md
 PHASE-8-REPORT.md
+PHASE-9-CONCEPTS.md
+PHASE-9-REPORT.md

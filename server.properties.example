@@ -1,0 +1,59 @@
+# Server settings (Phase 9).
+#
+# Copy this file to server.properties and edit it. The server reads server.properties
+# from the folder it is started in, or from -Dchat.config=<path>.
+#
+#   cp server.properties.example server.properties
+#   mvn -q exec:java
+#
+# Every key is OPTIONAL. Anything you leave out keeps its built-in default, so a file with
+# one line in it is perfectly normal. A value that is not a whole number where a number is
+# expected stops the server with a clear message, rather than being ignored.
+
+# ---------------------------------------------------------------- network
+port=5000
+maxClients=100
+
+# Longest line we will accept, in bytes (PROTOCOL.md section 1).
+maxLineBytes=4096
+
+# Messages we will hold for one client before deciding they have stopped reading.
+outboxCapacity=256
+
+# ---------------------------------------------------------------- deadlines
+# A new client must send HELLO within this long.
+handshakeTimeoutMillis=10000
+
+# Drop a joined client that says nothing at all for this long. A PONG does not count.
+idleTimeoutMillis=900000
+
+# How often a quiet client is asked "are you still there?".
+pingIntervalMillis=30000
+
+# How many unanswered PINGs end the connection.
+missedPongsBeforeKick=2
+
+# How long shutdown waits for the goodbye line to reach everybody.
+shutdownGraceMillis=200
+
+# ---------------------------------------------------------------- rate limiting
+rateBurst=20
+rateWindowMillis=10000
+rateViolationsBeforeKick=20
+
+# ---------------------------------------------------------------- misc
+serverName=rakesh-chat
+connectionLogPath=logs/connections.log
+
+# ---------------------------------------------------------------- the secret
+# The Phase 8 encryption passphrase. It is COMMENTED OUT on purpose.
+#
+# A passphrase written here is a secret sitting in a file in your project folder, which is
+# one careless `git add .` away from being on GitHub forever. server.properties is in
+# .gitignore for exactly this reason, and this example file must never have a real value in
+# it. Prefer the environment variable, which beats this file if both are set:
+#
+#   Windows PowerShell:  $env:CHAT_PASSPHRASE = "open sesame"; mvn -q exec:java
+#   Linux / macOS:       CHAT_PASSPHRASE="open sesame" mvn -q exec:java
+#
+#passphrase=change me

@@ -54,6 +54,7 @@ class MessageTest {
                     Message.reply("hello world"),
                     Message.list(),
                     Message.quit(),
+                    Message.pong(),
                     Message.welcome("alice", "rakesh-chat"),
                     Message.error(ErrorCode.NICK_TAKEN, "nickname already in use"),
                     Message.chat("alice", "hello world", TS),
@@ -61,7 +62,8 @@ class MessageTest {
                     new Message(MessageType.SENT, null, "bob", "psst", TS),
                     Message.joined("alice"),
                     Message.left("alice"),
-                    Message.users(List.of("alice", "bob")));
+                    Message.users(List.of("alice", "bob")),
+                    Message.ping());
 
             all.forEach(MessageTest::assertRoundTrip);
 

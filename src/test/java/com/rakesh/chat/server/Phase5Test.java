@@ -777,6 +777,10 @@ class Phase5Test {
 
             server.shutdown();
 
+            // Phase 9 added a goodbye line before the close, and it goes to connections
+            // that never handshook as well — they are somebody's client sitting at a
+            // connect screen, and they deserve to be told too.
+            lurker.expectError(ErrorCode.SERVER_SHUTDOWN);
             lurker.expectClosed();
             assertEquals(0, server.activeConnections(),
                     "shutdown must leave no live handler behind");

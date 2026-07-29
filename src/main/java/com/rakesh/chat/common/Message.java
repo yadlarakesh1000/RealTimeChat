@@ -57,7 +57,9 @@ public record Message(MessageType type, String sender, String target,
                 requireNonEmptyText(body, "REPLY.body");
                 requireAbsent(timestamp, "REPLY.timestamp");
             }
-            case LIST, QUIT -> {
+            // Phase 9 adds PING and PONG to this group. A heartbeat carries no information
+            // at all — the fact that it arrived is the whole message.
+            case LIST, QUIT, PING, PONG -> {
                 requireAbsent(sender, type + ".sender");
                 requireAbsent(target, type + ".target");
                 requireAbsent(body, type + ".body");
@@ -198,6 +200,8 @@ public record Message(MessageType type, String sender, String target,
             case REPLY   -> "REPLY " + body;
             case LIST    -> "LIST";
             case QUIT    -> "QUIT";
+            case PING    -> "PING";
+            case PONG    -> "PONG";
             case WELCOME -> "WELCOME " + sender + " " + body;
             case ERROR   -> "ERROR " + target + " " + body;
             case CHAT    -> "CHAT " + sender + " " + timestamp + " " + body;
@@ -251,6 +255,8 @@ public record Message(MessageType type, String sender, String target,
             case REPLY   -> new Message(MessageType.REPLY, null, null, requireBody(line, 2, "REPLY"), null);
             case LIST    -> new Message(MessageType.LIST, null, null, null, null); // must-ignore trailing
             case QUIT    -> new Message(MessageType.QUIT, null, null, null, null); // must-ignore trailing
+            case PING    -> new Message(MessageType.PING, null, null, null, null); // must-ignore trailing
+            case PONG    -> new Message(MessageType.PONG, null, null, null, null); // must-ignore trailing
             case WELCOME -> parseWelcome(line);
             case ERROR   -> parseError(line);
             case CHAT    -> parseTimestamped(line, MessageType.CHAT);
@@ -431,6 +437,16 @@ public record Message(MessageType type, String sender, String target,
 
     public static Message quit() {
         return new Message(MessageType.QUIT, null, null, null, null);
+    }
+
+    /** Phase 9: the server asking a quiet client whether it is still there. */
+    public static Message ping() {
+        return new Message(MessageType.PING, null, null, null, null);
+    }
+
+    /** Phase 9: the client's answer to a PING. */
+    public static Message pong() {
+        return new Message(MessageType.PONG, null, null, null, null);
     }
 
     public static Message welcome(String nickname, String serverName) {

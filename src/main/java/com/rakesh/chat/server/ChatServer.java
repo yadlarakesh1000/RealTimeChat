@@ -1,5 +1,7 @@
 package com.rakesh.chat.server;
 
+import com.rakesh.chat.common.ErrorCode;
+import com.rakesh.chat.common.Message;
 import com.rakesh.chat.common.crypto.MessageCrypto;
 
 import java.io.IOException;
@@ -7,6 +9,8 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -125,6 +129,9 @@ public class ChatServer {
         System.out.println(crypto.isOn()
                 ? "Encryption:     ON (AES-GCM on message bodies)"
                 : "Encryption:     OFF - start with -Dchat.passphrase=... to turn it on");
+        System.out.println("Heartbeat:      PING every " + config.pingIntervalMillis
+                + " ms, drop after " + config.missedPongsBeforeKick + " unanswered");
+        System.out.println("Max clients:    " + config.maxClients);
         System.out.println("Waiting for clients...");
         System.out.println("====================================");
 
@@ -186,6 +193,10 @@ public class ChatServer {
      * <ol>
      *   <li>{@code running = false}, then close the ServerSocket. The flag is what tells us
      *       the {@code SocketException} that follows was on purpose.</li>
+     *   <li>Phase 9: <b>tell everybody first.</b> One {@code ERROR SERVER_SHUTDOWN} line
+     *       each, then a short pause so the writer threads can get it out. Without the
+     *       pause the sockets close underneath the queued line and a planned restart looks
+     *       exactly like a crash.</li>
      *   <li>{@code kick()} every live handler — this is what actually ends the connections,
      *       because the pool's threads are all sitting inside a blocking read.</li>
      *   <li>{@code shutdown()}, {@code awaitTermination()}, {@code shutdownNow()}. All three,
@@ -204,6 +215,18 @@ public class ChatServer {
         System.out.println("\nShutting down server...");
 
         closeQuietly(serverSocket);
+
+        // Phase 9. Say goodbye before pulling the plug. This is queued, not written here:
+        // send() only puts the line on each client's outbox and returns immediately, so one
+        // unresponsive client cannot hold up the shutdown of all the others.
+        for (ClientHandler handler : liveHandlers) {
+            handler.send(Message.error(ErrorCode.SERVER_SHUTDOWN, "server is shutting down"));
+        }
+
+        // One shared pause for all of them to be written, rather than waiting on each in
+        // turn. If a client is too slow to receive it in this window it loses the notice
+        // and sees a plain disconnect — the old behaviour, which is an acceptable worst case.
+        sleepQuietly(config.shutdownGraceMillis);
 
         // kick(), not cleanup(): cleanup() joins each writer for up to a second, so
         // closing 100 clients from this one thread would take 100 seconds. kick() returns
@@ -228,6 +251,20 @@ public class ChatServer {
         System.out.println("Server stopped.");
     }
 
+    /** Phase 9. A pause that cannot throw out of the shutdown path. */
+    private static void sleepQuietly(int millis) {
+        if (millis <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            // Someone wants us to hurry up. Skip the grace period, but do not swallow the
+            // interrupt — the code after us may want to know.
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private static void closeQuietly(AutoCloseable c) {
         try {
             c.close();
@@ -237,12 +274,26 @@ public class ChatServer {
     }
 
     public static void main(String[] args) throws Exception {
-        ServerConfig config = ServerConfig.defaults();
+        // Phase 9. Settings come from a file now, so changing the port or the client limit
+        // no longer means editing Java and recompiling. A missing file is fine: you get the
+        // defaults, exactly as in Phases 1-8.
+        Path configFile = Path.of(
+                System.getProperty("chat.config", ServerConfig.DEFAULT_FILE.toString()));
+        ServerConfig config = ServerConfig.load(configFile);
+        System.out.println(Files.exists(configFile)
+                ? "Settings:       " + configFile.toAbsolutePath()
+                : "Settings:       defaults (no " + configFile + ")");
 
         // Phase 8. Two ways in, because a system property is easy from Maven
         // (-Dchat.passphrase=...) and an environment variable is what you would really use,
         // since anyone running `ps` can read a command line but not another user's env.
-        config.passphrase = System.getProperty("chat.passphrase", System.getenv("CHAT_PASSPHRASE"));
+        //
+        // Phase 9: both still beat the file. A secret typed on the command line lives for
+        // one run; a secret in a file lives until someone commits it by accident.
+        String override = System.getProperty("chat.passphrase", System.getenv("CHAT_PASSPHRASE"));
+        if (override != null && !override.isBlank()) {
+            config.passphrase = override;
+        }
 
         ChatServer server = new ChatServer(config);
         Runtime.getRuntime().addShutdownHook(new Thread(server::shutdown, "shutdown-hook"));

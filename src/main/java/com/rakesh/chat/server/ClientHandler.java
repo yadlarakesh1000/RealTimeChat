@@ -15,7 +15,6 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -77,8 +76,22 @@ public class ClientHandler implements Runnable {
     /** Reader thread only, so no synchronisation is needed. */
     private int rateViolations = 0;
 
+    /**
+     * Phase 9. How many {@code PING}s we have sent without hearing anything back.
+     * Reader thread only, like {@link #rateViolations}.
+     */
+    private int missedPongs = 0;
+
+    /**
+     * Phase 9. When this client last said something that was not a {@code PONG}.
+     *
+     * <p>nanoTime, not the wall clock, for the same reason {@link TokenBucket} uses it: the
+     * wall clock can jump backwards when the machine syncs its time, and a duration
+     * measured across that jump comes out negative.
+     */
+    private long lastActivityNanos = System.nanoTime();
+
     private final String remoteAddress;
-    private final Instant connectedAt;
     private final long connectedAtNanos;
 
     private final AtomicBoolean cleanedUp = new AtomicBoolean(false);
@@ -118,7 +131,6 @@ public class ClientHandler implements Runnable {
         // Captured on the acceptor thread, at accept time — not when run() finally gets a
         // pool slot. Under load those differ, and the log should record when the client
         // arrived, not when we got round to it.
-        this.connectedAt = Instant.now();
         this.connectedAtNanos = System.nanoTime();
 
         this.in = new BoundedLineReader(socket.getInputStream(), config.maxLineBytes);
@@ -132,6 +144,10 @@ public class ClientHandler implements Runnable {
 
         this.outbox = new LinkedBlockingQueue<>(config.outboxCapacity);
         this.writerThread = new Thread(this::writerLoop, "writer-pending");
+        // Phase 9. Daemon, so a writer wedged on a socket that will never drain cannot keep
+        // the JVM alive after shutdown. cleanup() still asks it to stop properly first; this
+        // is the backstop for when that does not work.
+        this.writerThread.setDaemon(true);
         this.rateLimiter = new TokenBucket(config.rateBurst, config.rateWindowMillis);
     }
 
@@ -157,21 +173,16 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-            // Post-handshake the deadline becomes an idle cap, not a liveness probe: it
-            // reaps half-open connections that TCP will never report (the unplugged-cable
-            // case), but it cannot distinguish those from a user who is simply reading.
-            // Hence 15 minutes rather than seconds. Phase 9's PING/PONG is what makes a
-            // short idle timeout safe, because then silence is genuinely evidence.
-            applyReadTimeout(config.idleTimeoutMillis);
+            // Phase 9. Post-handshake the read timeout becomes the heartbeat tick: every
+            // time it fires, readLoop() asks the two questions in heartbeat(). Before
+            // Phase 9 this was set to the 15-minute idle cap and a timeout meant "give up";
+            // now a timeout usually means "send a PING and keep waiting".
+            //
+            // The tick is the smaller of the two deadlines, so whichever one is due first
+            // is still noticed roughly on time.
+            applyReadTimeout(Math.min(config.pingIntervalMillis, config.idleTimeoutMillis));
 
             readLoop();
-
-        } catch (SocketTimeoutException e) {
-            // Only reachable post-handshake; the handshake catches its own.
-            closeReason = "idle timeout";
-            send(Message.error(ErrorCode.TIMEOUT,
-                    "no traffic for " + config.idleTimeoutMillis + " ms"));
-            ServerLog.warn("IDLE_TIMEOUT", who(), null);
 
         } catch (SocketException e) {
             // Reset, or our own kick() closing the socket underneath the read.
@@ -292,6 +303,13 @@ public class ClientHandler implements Runnable {
             String line;
             try {
                 line = in.readLine();
+            } catch (SocketTimeoutException e) {
+                // Phase 9. Nothing arrived for one tick. That is not a failure by itself —
+                // most of the time it just means nobody is typing.
+                if (!heartbeat()) {
+                    return;
+                }
+                continue;
             } catch (ProtocolException e) {
                 // Only TOO_LONG can reach here. Framing sync is gone, so there is nothing
                 // safe to resume from: report and disconnect.
@@ -305,6 +323,10 @@ public class ClientHandler implements Runnable {
                 closeReason = "peer closed";
                 return; // clean EOF
             }
+
+            // Phase 9. Bytes arrived, so the socket is alive and any PING we were waiting
+            // on is answered — whatever the line turns out to say.
+            missedPongs = 0;
 
             // Charged BEFORE parsing, so a garbage line costs the same as a valid one.
             // This is what closes the amplification hole PROTOCOL.md §3 deferred to this
@@ -322,7 +344,17 @@ public class ClientHandler implements Runnable {
                 // Phase 8: parse first, then decrypt. The verb and the target have to stay
                 // readable for routing, so only the body is scrambled and only the body is
                 // unscrambled. crypto.decrypt is a no-op when no passphrase is configured.
-                if (!dispatch(crypto.decrypt(Message.parse(line)))) {
+                Message incoming = crypto.decrypt(Message.parse(line));
+
+                // Phase 9. A PONG proves the socket works; it does not prove anyone is
+                // there. If it counted as activity, a client left running overnight would
+                // hold its slot forever by answering heartbeats nobody typed. Unparseable
+                // lines do not count either — they never reach this line.
+                if (incoming.type() != MessageType.PONG) {
+                    lastActivityNanos = System.nanoTime();
+                }
+
+                if (!dispatch(incoming)) {
                     return; // QUIT
                 }
             } catch (ProtocolException e) {
@@ -335,6 +367,51 @@ public class ClientHandler implements Runnable {
                 send(Message.error(e.code(), e.getMessage()));
             }
         }
+    }
+
+    /**
+     * Phase 9. Called every time the read timeout fires, i.e. every time this client has
+     * been silent for one tick. It answers two <i>different</i> questions:
+     *
+     * <ol>
+     *   <li><b>Has the person gone?</b> No traffic for {@code idleTimeoutMillis} means the
+     *       user wandered off, so the slot goes back to the pool.</li>
+     *   <li><b>Has the <i>socket</i> gone?</b> This is the one TCP will not tell you about.
+     *       Unplug the network cable and neither side gets a FIN or an RST — the server is
+     *       simply never told, and the connection sits there looking perfectly healthy
+     *       until something is actually sent. So we send something: {@code PING}. Two
+     *       unanswered ones and the connection is treated as dead.</li>
+     * </ol>
+     *
+     * <p>The order matters. Idle is checked first because pinging somebody we have already
+     * decided to drop is wasted work.
+     *
+     * @return {@code true} to keep reading, {@code false} to end the connection
+     */
+    private boolean heartbeat() {
+        long silentMillis = (System.nanoTime() - lastActivityNanos) / 1_000_000L;
+
+        if (silentMillis >= config.idleTimeoutMillis) {
+            closeReason = "idle timeout";
+            send(Message.error(ErrorCode.TIMEOUT,
+                    "no traffic for " + config.idleTimeoutMillis + " ms"));
+            ServerLog.warn("IDLE_TIMEOUT", who(), silentMillis + " ms silent");
+            return false;
+        }
+
+        if (missedPongs >= config.missedPongsBeforeKick) {
+            // The server ended this one, so it is a KICKED in the connection log, not a
+            // DISCONNECT. "Who ended it" is the question that log exists to answer.
+            kicked = true;
+            closeReason = "no PONG after " + missedPongs + " PINGs";
+            send(Message.error(ErrorCode.TIMEOUT, "no answer to " + missedPongs + " PINGs"));
+            ServerLog.warn("HEARTBEAT_LOST", who(), closeReason);
+            return false;
+        }
+
+        missedPongs++;
+        send(Message.ping());
+        return true;
     }
 
     /**
@@ -396,6 +473,10 @@ public class ClientHandler implements Runnable {
             case MSG -> registry.broadcast(Message.chat(nickname, m.body()), this);
 
             case LIST -> send(Message.users(registry.onlineNicknames()));
+
+            // Phase 9. Nothing to do: the counter was already cleared in readLoop() the
+            // moment the bytes arrived. Arriving *is* the entire message.
+            case PONG -> { }
 
             case QUIT -> {
                 closeReason = "QUIT";
@@ -617,10 +698,6 @@ public class ClientHandler implements Runnable {
 
     public String getRemoteAddress() {
         return remoteAddress;
-    }
-
-    public Instant getConnectedAt() {
-        return connectedAt;
     }
 
     /** How long this connection has been alive. Uses nanoTime for the same reason

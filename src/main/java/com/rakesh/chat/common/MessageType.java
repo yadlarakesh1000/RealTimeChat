@@ -11,6 +11,8 @@ public enum MessageType {
     REPLY,
     LIST,
     QUIT,
+    /** Phase 9: the answer to a {@code PING}. Proves the client is still there. */
+    PONG,
 
     // ----- server to client -----
     WELCOME,
@@ -22,12 +24,14 @@ public enum MessageType {
     SENT,
     JOINED,
     LEFT,
-    USERS;
+    USERS,
+    /** Phase 9: "are you still there?". The client must answer with {@code PONG}. */
+    PING;
 
 
     public boolean fromClient() {
         return switch (this) {
-            case HELLO, MSG, PM, REPLY, LIST, QUIT -> true;
+            case HELLO, MSG, PM, REPLY, LIST, QUIT, PONG -> true;
             default -> false;
         };
     }

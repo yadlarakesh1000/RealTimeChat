@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -201,6 +202,60 @@ class BoundedLineReaderTest {
         assertEquals("", r.readLine(),
                 "reader must resume exactly where it stopped, not at the next newline");
         assertEquals("ok", r.readLine());
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 9: surviving a read timeout mid-line
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("a timeout in the middle of a line does not lose the bytes already read")
+    void aPartialLineSurvivesAnInterruptedRead() throws Exception {
+        // Phase 9 gives the socket a 30-second read timeout, so read() now throws on a
+        // perfectly healthy connection whenever nobody is typing. If a half-read line were
+        // thrown away when that happened, "MSG hello there" split across the timeout would
+        // arrive as a line reading "o there" — a corrupted message out of thin air.
+        InputStream stalling = new InputStream() {
+            private final byte[] data = "MSG hello there\n".getBytes(StandardCharsets.UTF_8);
+            private int i = 0;
+            private boolean stalled = false;
+
+            @Override public int read() throws IOException {
+                if (i == 5 && !stalled) {       // right in the middle of the line
+                    stalled = true;
+                    throw new SocketTimeoutException("Read timed out");
+                }
+                return (i < data.length) ? (data[i++] & 0xFF) : -1;
+            }
+
+            // A real socket overrides this, and a timeout comes straight out of it. The
+            // default InputStream version quietly SWALLOWS an IOException once it has read
+            // at least one byte — so without this override the timeout would never reach
+            // the reader and the test would be proving nothing. (See LEARNING-LOG.md, B9.)
+            @Override public int read(byte[] b, int off, int len) throws IOException {
+                int c = read();
+                if (c == -1) {
+                    return -1;
+                }
+                b[off] = (byte) c;
+                return 1;
+            }
+        };
+
+        BoundedLineReader r = new BoundedLineReader(stalling, CAP);
+        assertThrows(SocketTimeoutException.class, r::readLine);
+        assertEquals("MSG hello there", r.readLine(),
+                "the reader must carry on from where the timeout interrupted it");
+    }
+
+    @Test
+    @DisplayName("a completed line is not repeated on the next call")
+    void theBufferIsClearedAfterEveryLine() throws Exception {
+        // The other half of the same change: the buffer is now a field, so forgetting to
+        // clear it would make every line drag the previous one along in front of it.
+        BoundedLineReader r = reader("first\nsecond\n");
+        assertEquals("first", r.readLine());
+        assertEquals("second", r.readLine());
     }
 
     // ------------------------------------------------------------------
