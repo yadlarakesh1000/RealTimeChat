@@ -68,6 +68,97 @@
           <mainClass>com.rakesh.chat.client.Main</mainClass>
         </configuration>
       </plugin>
+
+      <!-- Phase 10. `mvn package` now also builds two runnable jars.
+
+           A plain jar only holds MY classes, so `java -jar` on it dies with
+           NoClassDefFoundError the moment it needs JavaFX. Shade builds a "fat jar":
+           my classes plus every dependency's classes, unpacked into one file, with a
+           Main-Class written into the manifest so `java -jar` knows where to start.
+
+           Two executions because this project has two programs. shadedArtifactAttached
+           keeps the ordinary realtime-chat-0.1.0-SNAPSHOT.jar as the main build output
+           and adds each fat jar beside it. outputFile then gives them short, fixed
+           names, so run-server.sh does not have to be edited every time the version
+           number changes:
+
+             target/chat-server.jar
+             target/chat-client.jar -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.2</version>
+
+        <configuration>
+          <createDependencyReducedPom>false</createDependencyReducedPom>
+          <filters>
+            <filter>
+              <artifact>*:*</artifact>
+              <excludes>
+                <!-- Signed jars carry a signature over their own file list. Merging them
+                     into a new jar breaks that signature, and Java then refuses to load
+                     the classes ("Invalid signature file digest"). Dropping the signature
+                     files is the standard fix. -->
+                <exclude>META-INF/*.SF</exclude>
+                <exclude>META-INF/*.DSA</exclude>
+                <exclude>META-INF/*.RSA</exclude>
+                <exclude>module-info.class</exclude>
+              </excludes>
+            </filter>
+          </filters>
+        </configuration>
+
+        <executions>
+          <execution>
+            <id>server-jar</id>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <shadedArtifactAttached>true</shadedArtifactAttached>
+              <shadedClassifierName>server</shadedClassifierName>
+              <outputFile>${project.build.directory}/chat-server.jar</outputFile>
+              <artifactSet>
+                <excludes>
+                  <!-- The server never draws a window, so shipping ~20 MB of JavaFX with
+                       it would be dead weight on every copy. -->
+                  <exclude>org.openjfx:*</exclude>
+                </excludes>
+              </artifactSet>
+              <transformers>
+                <transformer
+                    implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>com.rakesh.chat.server.Main</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+
+          <execution>
+            <id>client-jar</id>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <shadedArtifactAttached>true</shadedArtifactAttached>
+              <shadedClassifierName>client</shadedClassifierName>
+              <outputFile>${project.build.directory}/chat-client.jar</outputFile>
+              <transformers>
+                <transformer
+                    implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <!-- client.Main, NOT ChatWindow. A main class that extends Application
+                       makes the JavaFX launcher demand the module path; this one does not
+                       extend it, so the fat jar runs from the plain classpath. See the
+                       javadoc on client/Main.java. -->
+                  <mainClass>com.rakesh.chat.client.Main</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
     </plugins>
   </build>
 

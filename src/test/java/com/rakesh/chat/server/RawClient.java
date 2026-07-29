@@ -12,6 +12,7 @@ import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -112,7 +113,18 @@ final class RawClient implements Closeable {
     }
 
     void expectClosed() throws IOException, ProtocolException {
-        assertNull(readRaw(), "expected the server to close the connection");
+        try {
+            assertNull(readRaw(), "expected the server to close the connection");
+        } catch (SocketException e) {
+            // A reset is also the connection ending, and from here it is indistinguishable
+            // from a polite close. The server gets a reset instead of a clean FIN whenever
+            // it closes a socket that still has unread bytes in its receive buffer — which
+            // is exactly the situation in every "the server gave up on this client" test,
+            // because those clients are mid-flood when they get cut off.
+            //
+            // Windows words it "An established connection was aborted by the software in
+            // your host machine"; Linux says "Connection reset by peer".
+        }
     }
 
     /**

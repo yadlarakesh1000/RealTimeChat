@@ -496,11 +496,26 @@ class Phase5Test {
             startServer(rateLimit(3, 60_000, 5));
 
             RawClient flooder = connect().helloAs("flooder");
-            for (int i = 0; i < 40; i++) {
+
+            // Phase 10 fix. This used to fire all 40 lines and only then read, and it failed
+            // roughly one run in three on Windows with "connection aborted".
+            //
+            // The reason is worth knowing. Closing a socket that still has UNREAD data
+            // sitting in its receive buffer makes TCP send RST rather than FIN — and an RST
+            // also throws away whatever that socket had already queued in the other
+            // direction. So the server would kick the flooder after ~8 lines, close on the
+            // remaining ~32 unread ones, and the ERROR it had politely sent first died with
+            // them. The test was racing the server's own teardown.
+            //
+            // So: provoke the refusal, READ it, and only then keep flooding.
+            for (int i = 0; i < 5; i++) {
                 flooder.send("MSG flood " + i);
             }
-
             flooder.expectError(ErrorCode.RATE_LIMITED);
+
+            for (int i = 0; i < 40; i++) {
+                flooder.send("MSG more " + i);
+            }
             flooder.expectClosed();
 
             await("cleanup", () -> server.getRegistry().size() == 0);
